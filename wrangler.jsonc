@@ -10,7 +10,17 @@
 	"observability": {
 		"enabled": true
 	},
-	"upload_source_maps": true
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "personal-ai-os-db",
+			"database_id": "05d9a930-0cb1-4d3c-9203-20fcf538dde7"
+		}
+	],
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	}
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
