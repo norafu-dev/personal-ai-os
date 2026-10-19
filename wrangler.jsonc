@@ -46,7 +46,7 @@
 			"kv_namespaces": [
 				{
 					"binding": "OAUTH_KV",
-					"id": "staging-oauth-local-only"
+					"id": "e4f50472d5be477a99e22260d71973ed"
 				}
 			],
 			"d1_databases": [

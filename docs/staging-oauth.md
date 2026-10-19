@@ -32,7 +32,7 @@ The provider advertises RFC 9207 issuer identification and includes `iss` in aut
 | `ENVIRONMENT` | staging var | `staging` |
 | `OAUTH_ISSUER` | staging var | Exact public HTTPS origin, no path or trailing slash |
 | `OAUTH_REDIRECT_URIS` | staging var | JSON array of exact HTTPS ChatGPT OAuth redirect URIs; no wildcard |
-| `OAUTH_KV` | staging-only KV binding | Currently `staging-oauth-local-only`, an intentional local placeholder, not a remote namespace ID |
+| `OAUTH_KV` | staging-only KV binding | Independent namespace `staging-personal-ai-os-staging-oauth`, ID `e4f50472d5be477a99e22260d71973ed`; created for deployment preparation, not yet attached by a deployed OAuth version |
 | `OAUTH_GITHUB_CLIENT_ID` | staging secret | New GitHub OAuth App dedicated to this environment |
 | `OAUTH_GITHUB_CLIENT_SECRET` | staging secret | Never enter this secret in ChatGPT or Notion |
 | `OAUTH_ALLOWED_GITHUB_ID` | staging secret | Nora's verified immutable GitHub numeric user ID, not login/email |
@@ -70,10 +70,19 @@ For a manual browser login, use a separate development GitHub OAuth App and a st
 
 ## Remaining review items
 
-- Actual GitHub OAuth App and ChatGPT authorization are not exercised; no remote KV, remote secrets, remote D1 or deployment changes were made in this task.
+- The local implementation phase did not alter remote resources. During the subsequently authorized deployment preparation, an isolated staging KV was created (see deployment preparation record below). GitHub OAuth and ChatGPT authorization remain unverified.
 - Only Nora can receive grants, but the DCR/consent routes are public protocol endpoints. Before a broader rollout, apply staging-specific rate limiting to registration and authorization to control KV abuse.
 - The provider uses eventually consistent KV. Its consent/state helpers are single-use under normal operation, but simultaneous requests from the same browser may race; this is a documented provider limitation. Review whether stronger storage is needed beyond this private staging MVP.
 - GitHub is used as a login identity only. Revoking the GitHub App does not by itself revoke a separately issued MCP grant. Revoke MCP credentials through the provider's published `revocation_endpoint` (the token endpoint), change the allowlisted account ID to stop access/refresh, or wait for the fixed grant expiry.
 - Keep credentials out of logs, URLs and Notion. The application emits generic auth errors and suppresses provider diagnostic logs.
 
 References: [OpenAI authentication](https://developers.openai.com/plugins/build/auth), [Cloudflare OAuth Provider](https://github.com/cloudflare/workers-oauth-provider), [consent helpers](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/consent-page.md), [upstream sign-in helpers](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/upstream-sign-in.md), [GitHub OAuth](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).
+
+## Deployment preparation record (2026-10-19)
+
+- Authorized deployment preparation created remote KV `staging-personal-ai-os-staging-oauth` (`e4f50472d5be477a99e22260d71973ed`) and replaced the placeholder in the staging config.
+- `gh api user` verified authenticated account `norafu-dev`, numeric ID `192425660`.
+- Local and remote checks found no GitHub OAuth App client ID/secret configured. The deployment waits for those credentials and the exact ChatGPT OAuth redirect URI; do not publish the fail-closed 503 version in place of the currently functioning staging version.
+- GitHub App setup: name `Personal AI OS Staging`; homepage `https://personal-ai-os-staging.noradev.workers.dev`; callback `https://personal-ai-os-staging.noradev.workers.dev/oauth/github/callback`.
+- Store App credentials only in ignored `.dev.vars.staging` or upload directly to staging Worker secrets. Do not send them through chat, Notion or Git.
+- No OAuth deployment, remote D1 migration or production changes were performed during this preparation step.
