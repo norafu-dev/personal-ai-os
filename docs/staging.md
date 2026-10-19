@@ -1,6 +1,6 @@
 # Personal AI OS staging
 
-The `staging` Wrangler environment resolves to the Worker name `personal-ai-os-staging`. Its `DB` binding is named `personal-ai-os-staging-db` and intentionally has no remote `database_id` yet. This prevents an accidental remote migration or deployment from targeting production.
+The `staging` Wrangler environment resolves to the Worker name `personal-ai-os-staging`. Its `DB` binding is the independent `personal-ai-os-staging-db` database (`9a0612b1-0109-429b-ad79-bf3653342833`), never the production D1 database.
 
 ## Local setup
 
@@ -65,7 +65,7 @@ Do not run these commands until Nora explicitly approves remote resource creatio
 pnpm exec wrangler d1 create personal-ai-os-staging-db
 ```
 
-Copy the returned UUID into `env.staging.d1_databases[0].database_id`, then configure each staging secret independently:
+If the staging database ever needs to be recreated, copy the returned UUID into `env.staging.d1_databases[0].database_id`. Configure each staging secret independently:
 
 ```sh
 pnpm exec wrangler secret put NOTION_API_KEY --env staging
@@ -83,3 +83,17 @@ pnpm exec wrangler deploy --env staging
 ```
 
 Never change the production Notion Connection Webhook target for this test. ChatGPT Work discovery and subscription remain blocked until the staging Worker and an HTTPS callback are available publicly.
+
+## Deployment record (2026-10-19)
+
+- Worker: `https://personal-ai-os-staging.noradev.workers.dev`
+- MCP: `https://personal-ai-os-staging.noradev.workers.dev/mcp`
+- Version: `8b2bc25f-56b5-4a75-868c-3b170519125f`
+- Remote staging D1 migrations 0001–0005 applied successfully.
+- Public checks: health 200, unauthenticated MCP 401, authenticated discovery and events list 200.
+- Synthetic event `staging-38fbd106-18eb-44ac-b588-428b1cbe899c` persisted remotely with status `completed`, attempts 1.
+- Five staging secrets uploaded; random MCP and webhook credentials are retained only in ignored `.dev.vars.staging`.
+- `NOTION_API_KEY` is an intentionally unusable staging value: the current event pipeline does not read Notion. Configure a separately authorized integration before adding Notion read tools.
+- `MCP_CALLBACK_ORIGIN` is still `https://callback.staging.example.com`, a placeholder. Replace it with the actual ChatGPT callback origin before subscription verification. No active subscriptions or successful remote callback deliveries have been claimed.
+- ChatGPT connection must support the configured Bearer authentication; compatibility with the actual ChatGPT plugin connection remains to be verified.
+- Production resources and the production Notion Webhook target were not changed.

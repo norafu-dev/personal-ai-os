@@ -41,6 +41,7 @@
 				{
 					"binding": "DB",
 					"database_name": "personal-ai-os-staging-db",
+					"database_id": "9a0612b1-0109-429b-ad79-bf3653342833",
 					"migrations_dir": "migrations"
 				}
 			],
