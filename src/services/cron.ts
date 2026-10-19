@@ -1,19 +1,17 @@
-import { processNotionEvent } from './notion-event';
+import { processNotionEvent, type NotionEventHandler } from './notion-event';
 
 type Env = {
 	DB: D1Database;
-	NOTION_API_KEY: string;
 };
 
 type PendingEvent = {
 	id: string;
-	entity_id: string;
 };
 
-export async function retryNotionEvents(env: Env): Promise<void> {
+export async function retryNotionEvents(env: Env, handleEvent?: NotionEventHandler): Promise<void> {
 	const { results } = await env.DB.prepare(
 		`
-    SELECT id, entity_id
+    SELECT id
     FROM webhook_events
     WHERE attempts < 3
       AND (
@@ -35,7 +33,7 @@ export async function retryNotionEvents(env: Env): Promise<void> {
 
 	for (const event of results) {
 		try {
-			await processNotionEvent(env.DB, env.NOTION_API_KEY, event.id, event.entity_id);
+			await processNotionEvent(env.DB, event.id, handleEvent);
 		} catch (error) {
 			console.error('Cron retry failed:', event.id, error);
 		}

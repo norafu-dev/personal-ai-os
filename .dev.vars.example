@@ -1,0 +1,10 @@
+NOTION_API_KEY=secret_your_notion_api_key
+NOTION_DATA_SOURCE_ID=your_default_notion_data_source_id
+NOTION_WEBHOOK_SECRET=your_notion_webhook_verification_token
+
+# Shared bearer token used by the private ChatGPT MCP connection.
+MCP_AUTH_TOKEN=replace_with_a_long_random_token
+
+# Exact public HTTPS origin allowed for ChatGPT MCP Event callbacks.
+# Do not include a trailing slash or path.
+MCP_CALLBACK_ORIGIN=https://callback.example.com
