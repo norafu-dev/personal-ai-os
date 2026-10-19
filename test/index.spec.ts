@@ -20,9 +20,12 @@ const webhookSecret = 'test-webhook-secret';
 
 const testEnv: Env = {
 	DB: env.DB,
+	ENVIRONMENT: 'staging',
 	NOTION_API_KEY: 'test-notion-api-key',
 	NOTION_DATA_SOURCE_ID: 'test-data-source-id',
 	NOTION_WEBHOOK_SECRET: webhookSecret,
+	MCP_AUTH_TOKEN: 'test-mcp-token',
+	MCP_CALLBACK_ORIGIN: 'https://callback.example.com',
 };
 
 function webhookPayload({

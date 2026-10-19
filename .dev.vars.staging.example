@@ -1,0 +1,9 @@
+# Copy this file to .dev.vars.staging for local staging work.
+# Never reuse production secrets in the copied file.
+NOTION_API_KEY=unused_local_staging_key
+NOTION_DATA_SOURCE_ID=95af6fad-798f-4d0a-b370-356646a5745d
+NOTION_WEBHOOK_SECRET=replace_with_a_staging_only_webhook_secret
+MCP_AUTH_TOKEN=replace_with_a_staging_only_mcp_token
+
+# Exact HTTPS origin supplied for the staging MCP callback.
+MCP_CALLBACK_ORIGIN=https://callback.staging.example.com

@@ -5,9 +5,13 @@
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
+		"dev:staging": "wrangler dev --env staging --local",
 		"start": "wrangler dev",
 		"test": "vitest",
-		"cf-typegen": "wrangler types"
+		"test:staging": "vitest run --config vitest.staging.config.mts",
+		"staging:event": "node scripts/send-staging-notion-event.mjs",
+		"cf-typegen": "wrangler types",
+		"cf-typegen:staging": "wrangler types --env staging"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "^1.0.0",

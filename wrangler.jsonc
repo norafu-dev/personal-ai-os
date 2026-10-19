@@ -20,6 +20,34 @@
 	],
 	"triggers": {
 		"crons": ["*/5 * * * *"]
+	},
+	"env": {
+		"staging": {
+			"workers_dev": true,
+			"routes": [],
+			"vars": {
+				"ENVIRONMENT": "staging"
+			},
+			"secrets": {
+				"required": [
+					"NOTION_API_KEY",
+					"NOTION_DATA_SOURCE_ID",
+					"NOTION_WEBHOOK_SECRET",
+					"MCP_AUTH_TOKEN",
+					"MCP_CALLBACK_ORIGIN"
+				]
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "personal-ai-os-staging-db",
+					"migrations_dir": "migrations"
+				}
+			],
+			"triggers": {
+				"crons": ["*/5 * * * *"]
+			}
+		}
 	}
 	/**
 	 * Smart Placement
