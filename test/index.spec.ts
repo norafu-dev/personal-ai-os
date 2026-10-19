@@ -18,7 +18,7 @@ const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 const webhookSecret = 'test-webhook-secret';
 
-const testEnv: Env = {
+const testEnv = {
 	DB: env.DB,
 	ENVIRONMENT: 'staging',
 	NOTION_API_KEY: 'test-notion-api-key',

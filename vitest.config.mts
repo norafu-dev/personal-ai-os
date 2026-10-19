@@ -16,6 +16,7 @@ export default defineConfig({
 		}),
 	],
 	test: {
+		include: ["test/index.spec.ts", "test/mcp-events.spec.ts"],
 		setupFiles: ["./test/apply-migrations.ts"],
 	},
 });

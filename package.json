@@ -21,6 +21,7 @@
 		"wrangler": "^4.149.0"
 	},
 	"dependencies": {
+		"@cloudflare/workers-oauth-provider": "^1.2.3",
 		"@modelcontextprotocol/server": "^2.3.1",
 		"@notionhq/client": "^5.27.0",
 		"hono": "^4.13.13",

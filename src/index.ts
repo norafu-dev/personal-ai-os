@@ -8,7 +8,7 @@ import { NOTION_CONFIG } from './config/notion';
 import { parseNotionWebhookEvent } from './types/notion-event';
 
 // Cloudflare Worker 环境变量
-type Bindings = {
+export type Bindings = {
 	NOTION_API_KEY: string;
 	NOTION_DATA_SOURCE_ID: string;
 	NOTION_WEBHOOK_SECRET: string;

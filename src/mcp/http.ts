@@ -31,6 +31,15 @@ export async function handleMcpHttp(request: Request, env: McpHttpEnv): Promise<
 	if (!bearer || !equalToken(bearer, env.MCP_AUTH_TOKEN)) {
 		return new Response('Unauthorized', { status: 401, headers: { 'WWW-Authenticate': 'Bearer' } });
 	}
+	return handleAuthenticatedMcpHttp(request, env, { owner: 'nora', token: bearer, scopes: ['mcp:tools', 'mcp:events'] });
+}
+
+// Only authentication adapters call this function; it is not a separate HTTP route.
+export async function handleAuthenticatedMcpHttp(
+	request: Request,
+	env: McpEventsEnv,
+	principal: { owner: string; token: string; scopes: string[] },
+): Promise<Response> {
 	if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
 	let body: unknown;
 	try {
@@ -42,7 +51,7 @@ export async function handleMcpHttp(request: Request, env: McpHttpEnv): Promise<
 	const message = body as Record<string, unknown>;
 	const id = typeof message.id === 'string' || typeof message.id === 'number' ? message.id : null;
 	if (message.jsonrpc !== '2.0' || id === null || typeof message.method !== 'string') return rpcError(id, -32600, 'Invalid Request');
-	const owner = 'nora';
+	const owner = principal.owner;
 	try {
 		switch (message.method) {
 			case 'server/discover':
@@ -56,7 +65,7 @@ export async function handleMcpHttp(request: Request, env: McpHttpEnv): Promise<
 			default:
 				return mcpHandler.fetch(request, {
 					parsedBody: body,
-					authInfo: { token: bearer, clientId: 'personal-ai-os', scopes: ['mcp:tools', 'mcp:events'] },
+					authInfo: { token: principal.token, clientId: 'personal-ai-os', scopes: principal.scopes },
 				});
 		}
 	} catch (error) {

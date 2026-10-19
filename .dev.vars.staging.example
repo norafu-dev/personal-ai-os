@@ -7,3 +7,9 @@ MCP_AUTH_TOKEN=replace_with_a_staging_only_mcp_token
 
 # Exact HTTPS origin supplied for the staging MCP callback.
 MCP_CALLBACK_ORIGIN=https://callback.staging.example.com
+
+# Staging-only GitHub OAuth App; do not reuse production credentials.
+OAUTH_GITHUB_CLIENT_ID=replace_with_staging_github_client_id
+OAUTH_GITHUB_CLIENT_SECRET=replace_with_staging_github_client_secret
+# Numeric immutable GitHub user ID, not login or email. Empty fails closed.
+OAUTH_ALLOWED_GITHUB_ID=

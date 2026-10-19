@@ -10,7 +10,12 @@ export default defineConfig({
 			return {
 				wrangler: { configPath: './wrangler.jsonc', environment: 'staging' },
 				miniflare: {
-					bindings: { TEST_MIGRATIONS: migrations },
+					bindings: {
+						TEST_MIGRATIONS: migrations,
+						OAUTH_GITHUB_CLIENT_ID: 'test-github-client',
+						OAUTH_GITHUB_CLIENT_SECRET: 'test-github-secret',
+						OAUTH_ALLOWED_GITHUB_ID: '12345',
+					},
 				},
 			};
 		}),

@@ -23,10 +23,13 @@
 	},
 	"env": {
 		"staging": {
+			"main": "src/staging.ts",
 			"workers_dev": true,
 			"routes": [],
 			"vars": {
-				"ENVIRONMENT": "staging"
+				"ENVIRONMENT": "staging",
+				"OAUTH_ISSUER": "https://personal-ai-os-staging.noradev.workers.dev",
+				"OAUTH_REDIRECT_URIS": "[\"https://chatgpt.com/connector_platform_oauth_redirect\"]"
 			},
 			"secrets": {
 				"required": [
@@ -34,9 +37,18 @@
 					"NOTION_DATA_SOURCE_ID",
 					"NOTION_WEBHOOK_SECRET",
 					"MCP_AUTH_TOKEN",
-					"MCP_CALLBACK_ORIGIN"
+					"MCP_CALLBACK_ORIGIN",
+					"OAUTH_GITHUB_CLIENT_ID",
+					"OAUTH_GITHUB_CLIENT_SECRET",
+					"OAUTH_ALLOWED_GITHUB_ID"
 				]
 			},
+			"kv_namespaces": [
+				{
+					"binding": "OAUTH_KV",
+					"id": "staging-oauth-local-only"
+				}
+			],
 			"d1_databases": [
 				{
 					"binding": "DB",
