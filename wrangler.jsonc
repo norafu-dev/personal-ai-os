@@ -29,7 +29,7 @@
 			"vars": {
 				"ENVIRONMENT": "staging",
 				"OAUTH_ISSUER": "https://personal-ai-os-staging.noradev.workers.dev",
-				"OAUTH_REDIRECT_URIS": "[\"https://chatgpt.com/connector_platform_oauth_redirect\"]"
+				"OAUTH_REDIRECT_URIS": "[\"https://chatgpt.com/connector_platform_oauth_redirect\",\"https://chatgpt.com/connector/oauth/6Y1OB3Z7yE3p\"]"
 			},
 			"secrets": {
 				"required": [

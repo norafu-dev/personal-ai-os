@@ -80,6 +80,8 @@ References: [OpenAI authentication](https://developers.openai.com/plugins/build/
 
 ## Deployment preparation record (2026-10-19)
 
+- Direct inspection of ChatGPT's Add custom MCP server → Advanced OAuth settings displayed `https://chatgpt.com/connector/oauth/6Y1OB3Z7yE3p` while metadata discovery failed against the previous static-Bearer deployment. This exact URI was added alongside the stable URI. After OAuth deployment, retry discovery and recheck the displayed URI; the server's RFC 9207 metadata may select the stable URI instead. No wildcard was added, and no ChatGPT plugin was created during this inspection.
+
 - Authorized deployment preparation created remote KV `staging-personal-ai-os-staging-oauth` (`e4f50472d5be477a99e22260d71973ed`) and replaced the placeholder in the staging config.
 - `gh api user` verified authenticated account `norafu-dev`, numeric ID `192425660`.
 - Local and remote checks found no GitHub OAuth App client ID/secret configured. The deployment waits for those credentials and the exact ChatGPT OAuth redirect URI; do not publish the fail-closed 503 version in place of the currently functioning staging version.
