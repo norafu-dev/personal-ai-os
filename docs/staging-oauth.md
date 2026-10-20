@@ -1,6 +1,6 @@
-# Staging OAuth (local implementation, awaiting review)
+# Staging OAuth
 
-Staging has a separate entry point, `src/staging.ts`. It uses Cloudflare's maintained `@cloudflare/workers-oauth-provider` 1.2.3, rather than implementing authorization codes, token storage or refresh itself. Production continues to enter through `src/index.ts` and retains its existing Bearer authentication. This change has not been deployed.
+Staging has a separate entry point, `src/staging.ts`. It uses Cloudflare's maintained `@cloudflare/workers-oauth-provider` 1.2.3, rather than implementing authorization codes, token storage or refresh itself. Production continues to enter through `src/index.ts` and retains its existing Bearer authentication. The OAuth version was deployed to staging on 2026-10-19; actual user login and token exchange from ChatGPT remain to be verified.
 
 ## Login and authorization
 
@@ -32,7 +32,7 @@ The provider advertises RFC 9207 issuer identification and includes `iss` in aut
 | `ENVIRONMENT` | staging var | `staging` |
 | `OAUTH_ISSUER` | staging var | Exact public HTTPS origin, no path or trailing slash |
 | `OAUTH_REDIRECT_URIS` | staging var | JSON array of exact HTTPS ChatGPT OAuth redirect URIs; no wildcard |
-| `OAUTH_KV` | staging-only KV binding | Independent namespace `staging-personal-ai-os-staging-oauth`, ID `e4f50472d5be477a99e22260d71973ed`; created for deployment preparation, not yet attached by a deployed OAuth version |
+| `OAUTH_KV` | staging-only KV binding | Independent namespace `staging-personal-ai-os-staging-oauth`, ID `e4f50472d5be477a99e22260d71973ed`; bound to deployed staging OAuth version |
 | `OAUTH_GITHUB_CLIENT_ID` | staging secret | New GitHub OAuth App dedicated to this environment |
 | `OAUTH_GITHUB_CLIENT_SECRET` | staging secret | Never enter this secret in ChatGPT or Notion |
 | `OAUTH_ALLOWED_GITHUB_ID` | staging secret | Nora's verified immutable GitHub numeric user ID, not login/email |
@@ -63,7 +63,7 @@ For a manual browser login, use a separate development GitHub OAuth App and a st
 1. Create an isolated staging KV namespace and replace the local placeholder in `env.staging.kv_namespaces`. Never reuse a production namespace.
 2. Create a dedicated staging GitHub OAuth App with the callback above; enable MFA on Nora's GitHub account. Verify Nora's numeric account ID and configure the three new secrets.
 3. Check the exact ChatGPT redirect URI and update the allowlist if necessary.
-4. After review and explicit deployment approval, deploy only `--env staging`. The existing remote deployment still runs the previous static-Bearer version until that happens.
+4. After review and explicit deployment approval, deploy only `--env staging`. The current remote staging deployment uses OAuth; production retains its existing authentication.
 5. In ChatGPT custom MCP setup, enter `https://personal-ai-os-staging.noradev.workers.dev/mcp` and select **OAuth**. DCR supplies the ChatGPT-facing client credentials; GitHub client credentials belong only in Worker secrets. If the UI offers optional predefined client fields, leave them empty for DCR. Rescan/recreate the connection if cached discovery is stale.
 6. Complete consent and GitHub login as Nora. Confirm metadata discovery, client registration, authorization, token exchange and authenticated `events/list` before attempting subscription.
 7. Obtain the actual MCP Events receiver origin, configure `MCP_CALLBACK_ORIGIN`, then verify subscription challenge, signed delivery and ChatGPT response. No event delivery is implied by successful OAuth.
@@ -88,3 +88,15 @@ References: [OpenAI authentication](https://developers.openai.com/plugins/build/
 - GitHub App setup: name `Personal AI OS Staging`; homepage `https://personal-ai-os-staging.noradev.workers.dev`; callback `https://personal-ai-os-staging.noradev.workers.dev/oauth/github/callback`.
 - Store App credentials only in ignored `.dev.vars.staging` or upload directly to staging Worker secrets. Do not send them through chat, Notion or Git.
 - No OAuth deployment, remote D1 migration or production changes were performed during this preparation step.
+
+## OAuth deployment verification (2026-10-19)
+
+- Final Worker version: `f9346d68-9195-491a-a20d-c60bf7987fa1`; MCP URL: `https://personal-ai-os-staging.noradev.workers.dev/mcp`.
+
+- The three real GitHub OAuth settings were verified locally without printing their values and uploaded with the existing five staging secrets. Nora's allowed GitHub ID is `192425660`.
+- `wrangler deploy --env staging` deployed the OAuth entry point with independent staging KV and D1. No D1 migration was needed.
+- Public checks: health 200; RFC 9728 resource metadata 200; authorization-server metadata 200 with S256, DCR and RFC 9207 issuer identification.
+- Missing, invalid and previous static MCP tokens all receive 401 with an OAuth discovery challenge.
+- A public-client DCR smoke test returned 201; an unapproved redirect returned 400. S256 authorization returned the protected consent page (200, X-Frame-Options DENY). No user grant or token was created by these smoke tests.
+- ChatGPT's actual Add custom MCP server dialog successfully rediscovered the metadata and selected DCR. With discovery complete, the displayed OAuth redirect became `https://chatgpt.com/connector_platform_oauth_redirect`. The temporary callback-ID URI observed before discovery was removed from the allowlist.
+- The ChatGPT dialog is left prepared with DCR selected. No plugin was created and no account consent was submitted. Nora must finish the real login; event subscription/delivery is still pending the actual event callback origin.

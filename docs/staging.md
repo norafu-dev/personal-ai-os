@@ -1,6 +1,6 @@
 # Personal AI OS staging
 
-OAuth development now uses a separate staging entry point. See [staging-oauth.md](staging-oauth.md) for local checks, new configuration requirements and ChatGPT setup. The deployed version described below still uses static Bearer authentication; the OAuth implementation is local and awaits review/deployment approval.
+OAuth now uses a separate staging entry point and was deployed on 2026-10-19. See [staging-oauth.md](staging-oauth.md) for verification and ChatGPT setup. The initial deployment record below describes the previous static Bearer version; the current staging MCP requires OAuth.
 
 The `staging` Wrangler environment resolves to the Worker name `personal-ai-os-staging`. Its `DB` binding is the independent `personal-ai-os-staging-db` database (`9a0612b1-0109-429b-ad79-bf3653342833`), never the production D1 database.
 
