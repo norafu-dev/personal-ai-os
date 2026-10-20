@@ -172,7 +172,10 @@ async function signedPost(
 	}
 	return webhookFetch(url, {
 		method: 'POST',
-		redirect: 'error',
+		// Workers does not support redirect:error. Return 3xx unchanged so
+		// challenge/delivery reject it via response.ok, without forwarding
+		// signed payloads or headers to any Location (even on the same origin).
+		redirect: 'manual',
 		signal: AbortSignal.timeout(10_000),
 		headers: {
 			'content-type': 'application/json',

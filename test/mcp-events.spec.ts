@@ -28,10 +28,28 @@ function params(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-const verificationFetch = vi.fn<typeof fetch>(async (_input, init) => {
-	const body = JSON.parse(String(init?.body)) as { challenge: string };
+const verificationFetch = vi.fn<typeof fetch>(async (input, init) => {
+	const request = new Request(input, init);
+	const body = JSON.parse(new TextDecoder().decode(await request.arrayBuffer())) as { challenge: string };
 	return Response.json({ challenge: body.challenge });
 });
+
+async function signedRequest(input: RequestInfo | URL, init?: RequestInit) {
+	// Exercise workerd's Request constructor, which rejects redirect:error.
+	// Returning a mocked response alone would hide that runtime incompatibility.
+	const request = new Request(input, init);
+	expect(request.redirect).toBe('manual');
+	expect(request.url).toBe(url);
+	const body = new TextDecoder().decode(await request.arrayBuffer());
+	const id = request.headers.get('webhook-id')!;
+	const timestamp = request.headers.get('webhook-timestamp')!;
+	const signature = request.headers.get('webhook-signature')!.slice(3);
+	const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('12345678901234567890123456789012'),
+		{ name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+	expect(await crypto.subtle.verify('HMAC', key, Uint8Array.from(atob(signature), char => char.charCodeAt(0)),
+		new TextEncoder().encode(`${id}.${timestamp}.${body}`))).toBe(true);
+	return { request, body: JSON.parse(body) as { challenge?: string; eventId?: string } };
+}
 
 function event(id: string, source = dataSourceId): StandardNotionEvent {
 	return {
@@ -73,6 +91,54 @@ describe('MCP Events', () => {
 		await env.DB.prepare('DELETE FROM mcp_event_subscriptions').run();
 	});
 
+	it('uses real workerd Requests for signed challenge and event delivery', async () => {
+		const transport = vi.fn<typeof fetch>(async (input, init) => {
+			const { body } = await signedRequest(input, init);
+			return body.challenge ? Response.json({ challenge: body.challenge }) : new Response(null, { status: 204 });
+		});
+		const subscription = await subscribeMcpEvent(eventsEnv, 'nora', params(), transport);
+		await enqueueMcpEventDeliveries(env.DB, event('runtime-request'), '2026-10-19 10:00:00');
+		await deliverPendingMcpEvents(eventsEnv, transport);
+		expect(transport).toHaveBeenCalledTimes(2);
+		const delivered = await env.DB.prepare('SELECT subscription_id, status, attempts, last_http_status FROM mcp_event_deliveries')
+			.first<{ subscription_id: string; status: string; attempts: number; last_http_status: number }>();
+		expect(delivered).toMatchObject({ subscription_id: subscription.id, status: 'accepted', attempts: 1, last_http_status: 204 });
+	});
+
+	it.each([301, 302, 303, 307, 308].flatMap(status => [
+		{ status, destination: 'same-origin', location: `${origin}/moved?private-location=value` },
+		{ status, destination: 'foreign-origin', location: 'https://untrusted.example/collect?private-location=value' },
+	]))('refuses $status redirects to $destination for challenge and delivery', async ({ status, location }) => {
+		const redirecting = vi.fn<typeof fetch>(async (input, init) => {
+			const { body } = await signedRequest(input, init);
+			// Even a correct echo must not make a redirect a valid verification.
+			return Response.json({ challenge: body.challenge, private: 'private-response-body' }, { status, headers: { location } });
+		});
+		await expect(subscribeMcpEvent(eventsEnv, 'nora', params(), redirecting))
+			.rejects.toMatchObject({ code: -32015, data: { reason: 'challenge_failed' } });
+		expect(redirecting).toHaveBeenCalledTimes(1);
+		expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM mcp_event_subscriptions').first('count')).toBe(0);
+
+		await subscribeMcpEvent(eventsEnv, 'nora', params(), verificationFetch);
+		await enqueueMcpEventDeliveries(env.DB, event('redirected-delivery'), '2026-10-19 10:00:00');
+		redirecting.mockClear();
+		await deliverPendingMcpEvents(eventsEnv, redirecting);
+		const failed = await env.DB.prepare('SELECT status, attempts, last_http_status, last_error, accepted_at FROM mcp_event_deliveries')
+			.first<{ status: string; attempts: number; last_http_status: number; last_error: string; accepted_at: string | null }>();
+		expect(failed).toMatchObject({ status: 'failed', attempts: 1, last_http_status: status,
+			last_error: `Callback returned HTTP ${status}`, accepted_at: null });
+		expect(redirecting).toHaveBeenCalledTimes(1);
+		// Preserve existing bounded retries; each attempt goes only to the original URL.
+		for (let attempt = 2; attempt <= 5; attempt++) {
+			await env.DB.prepare("UPDATE mcp_event_deliveries SET next_attempt_at = datetime('now', '-1 second')").run();
+			await deliverPendingMcpEvents(eventsEnv, redirecting);
+		}
+		await deliverPendingMcpEvents(eventsEnv, redirecting);
+		expect(redirecting).toHaveBeenCalledTimes(5);
+		expect(await env.DB.prepare('SELECT status, attempts, accepted_at FROM mcp_event_deliveries').first())
+			.toMatchObject({ status: 'abandoned', attempts: 5, accepted_at: null });
+	});
+
 	it('requires authentication and advertises the MCP 2.0 event', async () => {
 		const unauthorized = await handleMcpHttp(new Request('https://worker.example.com/mcp', { method: 'POST' }), httpEnv);
 		expect(unauthorized.status).toBe(401);
@@ -91,7 +157,7 @@ describe('MCP Events', () => {
 		expect(first).toMatchObject({ cursor: null, truncated: false });
 		expect(verificationFetch).toHaveBeenCalledTimes(1);
 		const request = verificationFetch.mock.calls[0]?.[1];
-		expect(request?.redirect).toBe('error');
+		expect(request?.redirect).toBe('manual');
 		expect(new Headers(request?.headers).get('webhook-signature')).toMatch(/^v1,[A-Za-z0-9+/=]+$/);
 		const second = await subscribeMcpEvent(eventsEnv, 'nora', params(), verificationFetch);
 		expect(second.id).toBe(first.id);
