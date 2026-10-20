@@ -45,7 +45,7 @@ async function consent(extra: Record<string, string> = {}) {
 	return { page, client, params };
 }
 
-async function login(githubId = 12345, requestedResource = resource) {
+async function beginLogin(requestedResource = resource) {
 	const { page, client } = await consent({ resource: requestedResource, ui_locales: 'zh-CN' });
 	expect(page.status).toBe(200);
 	const handle = (await page.text()).match(/name="handle" value="([^"]+)"/)![1];
@@ -55,6 +55,11 @@ async function login(githubId = 12345, requestedResource = resource) {
 	const githubUrl = new URL(approved.headers.get('Location')!);
 	expect(githubUrl.origin).toBe('https://github.com');
 	expect(githubUrl.searchParams.get('code_challenge_method')).toBe('S256');
+	return { approved, githubUrl, client };
+}
+
+async function login(githubId = 12345, requestedResource = resource) {
+	const { approved, githubUrl, client } = await beginLogin(requestedResource);
 	const fetchMock = vi.spyOn(globalThis, 'fetch')
 		.mockResolvedValueOnce(Response.json({ access_token: 'github-test-token', token_type: 'bearer' }))
 		.mockResolvedValueOnce(Response.json({ id: githubId }));
@@ -101,6 +106,51 @@ function rpc(token: string, method = 'server/discover', params: object = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('staging OAuth with the real provider and local KV', () => {
+	const githubFailures = [
+		...['incorrect_client_credentials', 'redirect_uri_mismatch', 'bad_verification_code', 'unverified_user_email'].map(code => ({
+			stage: 'token_exchange', code, status: 200,
+			reply: () => Response.json({ error: code, error_description: 'private-upstream-description' }),
+		})),
+		{ stage: 'token_exchange', code: 'oauth_error', status: 200, reply: () => Response.json({ error: 'private-arbitrary-error' }) },
+		{ stage: 'token_exchange', code: 'invalid_payload', status: 200, reply: () => Response.json({ access_token: 'private-token', token_type: 'unexpected' }) },
+		{ stage: 'token_exchange', code: 'invalid_json', status: 200, reply: () => new Response('private-invalid-json') },
+		{ stage: 'token_exchange', code: 'http_error', status: 503, reply: () => new Response('private-upstream-body', { status: 503 }) },
+		{ stage: 'token_exchange', code: 'timeout', status: undefined, reply: () => new DOMException('private-timeout-url', 'TimeoutError') },
+		{ stage: 'token_exchange', code: 'network_error', status: undefined, reply: () => new Error('private-network-url') },
+		{ stage: 'user_identity', code: 'http_error', status: 401, reply: () => Response.json({ message: 'private-github-message' }, { status: 401 }) },
+		{ stage: 'user_identity', code: 'http_error', status: 403, reply: () => Response.json({ message: 'private-github-message' }, { status: 403 }) },
+		{ stage: 'user_identity', code: 'invalid_json', status: 200, reply: () => new Response('private-invalid-json') },
+		{ stage: 'user_identity', code: 'invalid_payload', status: 200, reply: () => Response.json(null) },
+		{ stage: 'user_identity', code: 'invalid_payload', status: 200, reply: () => Response.json({ id: 'private-user-id' }) },
+		{ stage: 'user_identity', code: 'timeout', status: undefined, reply: () => new DOMException('private-timeout-url', 'AbortError') },
+		{ stage: 'user_identity', code: 'network_error', status: undefined, reply: () => new Error('private-network-url') },
+	];
+	it.each(githubFailures)('safely diagnoses GitHub $stage / $code / $status', async ({ stage, code, status, reply }) => {
+		const { approved, githubUrl, client } = await beginLogin();
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		let calls = 0;
+		vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+			calls++;
+			if (stage === 'user_identity' && calls === 1) return Response.json({ access_token: 'private-access-token', token_type: 'bearer' });
+			const result = reply();
+			if (result instanceof Error) throw result;
+			return result;
+		});
+		const response = await call(`/oauth/github/callback?code=private-code&state=${githubUrl.searchParams.get('state')}`,
+			{ headers: { cookie: cookie(approved) } });
+		expect(response.status).toBe(502);
+		expect(await response.text()).toBe('GitHub authentication failed');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		expect(response.headers.get('X-Staging-Auth-Stage')).toBe(stage);
+		expect(response.headers.get('X-Staging-Auth-Code')).toBe(code);
+		expect(response.headers.get('X-Staging-Auth-HTTP-Status')).toBe(status === undefined ? null : String(status));
+		expect(calls).toBe(stage === 'token_exchange' ? 1 : 2);
+		expect(warn).toHaveBeenCalledExactlyOnceWith('staging_github_auth_failed', { stage, code, ...(status === undefined ? {} : { httpStatus: status }) });
+		expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private-|client_id|secret|verifier|https:|state/);
+		const grants = await testEnv.OAUTH_KV.list({ prefix: 'grant:nora:' });
+		const records = await Promise.all(grants.keys.map(key => testEnv.OAUTH_KV.get(key.name, 'json')));
+		expect(records).not.toContainEqual(expect.objectContaining({ clientId: client.client_id }));
+	});
 	it('reproduces the provider invalid_target at parseAuthRequest for the observed origin', async () => {
 		const { params } = await consent();
 		params.set('resource', origin);

@@ -80,9 +80,36 @@ async function pkceChallenge(verifier: string): Promise<string> {
 	return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+type GitHubStage = 'token_exchange' | 'user_identity';
+const githubOAuthErrors = ['incorrect_client_credentials', 'redirect_uri_mismatch', 'bad_verification_code', 'unverified_user_email'] as const;
+type GitHubFailureCode = typeof githubOAuthErrors[number] | 'oauth_error' | 'timeout' | 'network_error' | 'invalid_json' | 'http_error' | 'invalid_payload';
+class GitHubIdentityError extends Error {
+	constructor(readonly stage: GitHubStage, readonly code: GitHubFailureCode, readonly httpStatus?: number) {
+		super('GitHub authentication failed');
+	}
+}
+
+async function githubJson(stage: GitHubStage, url: string, init: RequestInit) {
+	let response: Response;
+	try { response = await fetch(url, init); }
+	catch (error) {
+		throw new GitHubIdentityError(stage, error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'network_error');
+	}
+	let payload: unknown;
+	try { payload = await response.json(); }
+	catch { throw new GitHubIdentityError(stage, response.ok ? 'invalid_json' : 'http_error', response.status); }
+	if (stage === 'token_exchange' && payload && typeof payload === 'object' && 'error' in payload) {
+		const code = githubOAuthErrors.find(value => value === payload.error) ?? 'oauth_error';
+		throw new GitHubIdentityError(stage, code, response.status);
+	}
+	if (!response.ok) throw new GitHubIdentityError(stage, 'http_error', response.status);
+	if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new GitHubIdentityError(stage, 'invalid_payload', response.status);
+	return { payload: payload as Record<string, unknown>, status: response.status };
+}
+
 // GitHub is used only to establish identity. No repository scopes or GitHub token storage.
 async function githubIdentity(env: StagingOAuthEnv, code: string, verifier: string): Promise<string> {
-	const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
+	const tokenResponse = await githubJson('token_exchange', 'https://github.com/login/oauth/access_token', {
 		method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000),
 		headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
 		body: new URLSearchParams({
@@ -90,14 +117,14 @@ async function githubIdentity(env: StagingOAuthEnv, code: string, verifier: stri
 			code, code_verifier: verifier, redirect_uri: `${env.OAUTH_ISSUER}/oauth/github/callback`,
 		}),
 	});
-	const token: { access_token?: unknown; token_type?: unknown } = await tokenResponse.json();
-	if (!tokenResponse.ok || typeof token.access_token !== 'string' || token.token_type !== 'bearer') throw new Error('GitHub login failed');
-	const response = await fetch('https://api.github.com/user', {
+	const token = tokenResponse.payload;
+	if (typeof token.access_token !== 'string' || !token.access_token || token.token_type !== 'bearer') throw new GitHubIdentityError('token_exchange', 'invalid_payload', tokenResponse.status);
+	const response = await githubJson('user_identity', 'https://api.github.com/user', {
 		redirect: 'error', signal: AbortSignal.timeout(10_000),
 		headers: { authorization: `Bearer ${token.access_token}`, accept: 'application/vnd.github+json', 'User-Agent': 'personal-ai-os-staging' },
 	});
-	const user: { id?: unknown } = await response.json();
-	if (!response.ok || typeof user.id !== 'number' || !Number.isSafeInteger(user.id)) throw new Error('GitHub identity unavailable');
+	const user = response.payload;
+	if (typeof user.id !== 'number' || !Number.isSafeInteger(user.id) || user.id <= 0) throw new GitHubIdentityError('user_identity', 'invalid_payload', response.status);
 	return String(user.id);
 }
 
@@ -189,7 +216,18 @@ export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeo
 						}
 						let githubId: string;
 						try { githubId = await githubIdentity(env, code, upstream.data.verifier); }
-						catch { return new Response('GitHub authentication failed', { status: 502, headers: upstream.headers }); }
+						catch (error) {
+							const diagnostic = error instanceof GitHubIdentityError
+								? { stage: error.stage, code: error.code, ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }) }
+								: { stage: 'github_callback', code: 'internal_error' };
+							// Fixed enums + numeric status only. Never log errors, bodies,
+							// URLs, credentials, codes, PKCE values or account information.
+							console.warn('staging_github_auth_failed', diagnostic);
+							upstream.headers.set('X-Staging-Auth-Stage', diagnostic.stage);
+							upstream.headers.set('X-Staging-Auth-Code', diagnostic.code);
+							if ('httpStatus' in diagnostic) upstream.headers.set('X-Staging-Auth-HTTP-Status', String(diagnostic.httpStatus));
+							return new Response('GitHub authentication failed', { status: 502, headers: upstream.headers });
+						}
 						if (githubId !== env.OAUTH_ALLOWED_GITHUB_ID) return new Response('Account not authorized', { status: 403, headers: upstream.headers });
 						const completed = await oauth.completeAuthorization({ request: upstream.request, userId: 'nora',
 							metadata: {}, scope: upstream.request.scope, props: { owner: 'nora', githubId } satisfies Identity });
