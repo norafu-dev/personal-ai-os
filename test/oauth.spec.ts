@@ -1,7 +1,8 @@
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import staging from '../src/staging';
-import type { StagingOAuthEnv } from '../src/auth/staging-oauth';
+import { canonicalizeStagingOAuthResource, createStagingOAuthProvider, type StagingOAuthEnv } from '../src/auth/staging-oauth';
+import worker from '../src/index';
 
 const origin = 'https://personal-ai-os-staging.noradev.workers.dev';
 const redirectUri = 'https://chatgpt.com/connector_platform_oauth_redirect';
@@ -44,8 +45,8 @@ async function consent(extra: Record<string, string> = {}) {
 	return { page, client, params };
 }
 
-async function login(githubId = 12345) {
-	const { page, client } = await consent();
+async function login(githubId = 12345, requestedResource = resource) {
+	const { page, client } = await consent({ resource: requestedResource, ui_locales: 'zh-CN' });
 	expect(page.status).toBe(200);
 	const handle = (await page.text()).match(/name="handle" value="([^"]+)"/)![1];
 	const approved = await call('/authorize', { method: 'POST', headers: { origin, cookie: cookie(page) },
@@ -100,6 +101,71 @@ function rpc(token: string, method = 'server/discover', params: object = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('staging OAuth with the real provider and local KV', () => {
+	it('reproduces the provider invalid_target at parseAuthRequest for the observed origin', async () => {
+		const { params } = await consent();
+		params.set('resource', origin);
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const ctx = createExecutionContext();
+		// Intentionally bypass the compatibility boundary to prove the provider contract.
+		const response = await createStagingOAuthProvider(testEnv, worker.fetch).fetch(new Request(`${origin}/authorize?${params}`), testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(400);
+		expect(warn).toHaveBeenCalledWith('staging_oauth_rejected', { stage: 'authorize.parse', code: 'invalid_target' });
+	});
+	it('accepts the observed ChatGPT origin resource and keeps the grant bound to /mcp', async () => {
+		const { callback, client } = await login(12345, origin);
+		expect(callback.status).toBe(302);
+		const code = new URL(callback.headers.get('location')!).searchParams.get('code')!;
+		const response = await exchange(client.client_id, code, { resource: origin });
+		expect(response.status).toBe(200);
+		const tokens = await response.json() as Tokens;
+		expect((await rpc(tokens.access_token, 'tools/list')).status).toBe(200);
+		expect((await rpc(tokens.access_token, 'events/list')).status).toBe(200);
+		const grants = await testEnv.OAUTH_KV.list({ prefix: 'grant:nora:' });
+		const records = await Promise.all(grants.keys.map(key => testEnv.OAUTH_KV.get(key.name, 'json')));
+		expect(records).toContainEqual(expect.objectContaining({ clientId: client.client_id, resource }));
+		const refresh = await call('/oauth/token', { method: 'POST', body: new URLSearchParams({
+			grant_type: 'refresh_token', client_id: client.client_id, refresh_token: tokens.refresh_token, resource: origin }) });
+		expect(refresh.status).toBe(200);
+	});
+
+	it('does not canonicalize other origins, paths, ambiguous resources or unrelated requests', async () => {
+		for (const value of [ `${origin}/`, `${origin}/other`, `${origin}.attacker.example`,
+			'http://personal-ai-os-staging.noradev.workers.dev', `${origin}?x=1`, `${origin}#mcp` ]) {
+			const { page } = await consent({ resource: value });
+			expect(page.status).toBe(400);
+		}
+		const { params } = await consent();
+		params.set('resource', origin);
+		params.append('resource', 'https://attacker.example');
+		expect((await call(`/authorize?${params}`)).status).toBe(400);
+		for (const path of ['/mcp', '/oauth/register', '/oauth/github/callback']) {
+			const request = new Request(`${origin}${path}?resource=${encodeURIComponent(origin)}`);
+			expect(await canonicalizeStagingOAuthResource(request, origin)).toBe(request);
+		}
+		const request = new Request(`https://attacker.example/authorize?resource=${encodeURIComponent(origin)}`);
+		expect(await canonicalizeStagingOAuthResource(request, origin)).toBe(request);
+	});
+
+	it('logs only the failing stage and safe OAuth code, never request details', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { page } = await consent({ resource: 'https://attacker.example', state: 'private-client-state' });
+		expect(page.status).toBe(400);
+		expect(warn).toHaveBeenCalledWith('staging_oauth_rejected', { stage: 'authorize.parse', code: 'invalid_target' });
+		expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private-client-state|attacker|client_id|code_challenge/);
+	});
+
+	it('retains POST Origin enforcement for an origin-resource authorization', async () => {
+		const { page } = await consent({ resource: origin });
+		// Fetch Standard: no-referrer makes non-CORS form POST Origin null.
+		expect(page.headers.get('Referrer-Policy')).toBe('same-origin');
+		const handle = (await page.text()).match(/name="handle" value="([^"]+)"/)![1];
+		for (const value of ['null', 'https://attacker.example', '']) {
+			const response = await call('/authorize', { method: 'POST', headers: { origin: value, cookie: cookie(page) },
+				body: new URLSearchParams({ handle, decision: 'approve' }) });
+			expect(response.status).toBe(403);
+		}
+	});
 	it('publishes discovery and rejects missing/invalid/static credentials', async () => {
 		const denied = await call('/mcp', { method: 'POST' });
 		expect(denied.status).toBe(401);

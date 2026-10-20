@@ -74,7 +74,35 @@ For a manual browser login, use a separate development GitHub OAuth App and a st
 - Only Nora can receive grants, but the DCR/consent routes are public protocol endpoints. Before a broader rollout, apply staging-specific rate limiting to registration and authorization to control KV abuse.
 - The provider uses eventually consistent KV. Its consent/state helpers are single-use under normal operation, but simultaneous requests from the same browser may race; this is a documented provider limitation. Review whether stronger storage is needed beyond this private staging MVP.
 - GitHub is used as a login identity only. Revoking the GitHub App does not by itself revoke a separately issued MCP grant. Revoke MCP credentials through the provider's published `revocation_endpoint` (the token endpoint), change the allowlisted account ID to stop access/refresh, or wait for the fixed grant expiry.
-- Keep credentials out of logs, URLs and Notion. The application emits generic auth errors and suppresses provider diagnostic logs.
+- Keep credentials out of logs, URLs and Notion. The application emits generic auth errors and suppresses provider diagnostic logs. Authorization rejection diagnostics contain only a fixed stage and safe OAuth error code, never request parameters or error descriptions.
+
+## GET authorization 400 fix — local only (2026-10-20)
+
+Task: [修复 ChatGPT OAuth 授权 GET /authorize 返回 400](https://app.notion.com/p/3ff5fa82815981cd90acd187295aa203).
+
+### Evidence and root cause
+
+- Read-only inspection of the existing browser error page showed that ChatGPT sent the staging **origin**, without `/mcp`, as its `resource`. This corrects the task's initial description of that parameter. No full authorization URL, state, challenge, cookie or token is included in this record.
+- Live protected-resource metadata still advertises the canonical `/mcp` resource; its authorization-server issuer matches the staging origin. The configured staging KV namespace is `e4f50472d5be477a99e22260d71973ed`. Read-only KV checks found both ChatGPT DCR clients present, with the exact stable redirect URI, `authorization_code` / `refresh_token`, `code`, and public-client authentication `none`. They are not missing or expired at inspection time. This does not rule out transient KV propagation at registration time.
+- Provider 1.2.3 `parseAuthRequest()` calls `resolveAuthorizationRequestResource()`. An origin indicator does not match the configured narrower `/mcp` resource and throws `AuthorizationError` with code `invalid_target`, **before** `describeConsent()` or `beginConsent()`. The generic catch previously hid that distinction. A direct-provider regression now reproduces this exact stage/code locally.
+- The original smoke test used `/mcp`, so it missed the observed origin-only request structure. OpenAI's [authentication guide](https://developers.openai.com/plugins/build/auth) describes resource indicators through authorization and token exchange; the browser observation is the evidence for this connection's differing value. Cloudflare's [authorization-server contract](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/authorization-server.md) explains resource validation.
+
+### Minimal fix and simple example
+
+`src/staging.ts` applies a staging-only compatibility boundary before calling the provider. One exact origin-only indicator is mapped to the existing canonical `/mcp` resource in GET `/authorize` and form-encoded POST `/oauth/token` (code exchange and refresh). No other origin, arbitrary path, query, fragment or mixed resource list is rewritten. Metadata, stored grant audience and protected MCP route remain `/mcp`; this does not issue an origin-wide token or register a second resource.
+
+Example: ChatGPT says “I want to connect to this staging server” using the root origin. Previously the server rejected it because it expected the specific MCP endpoint. Now the exact known server alias is translated to `/mcp`, and the existing PKCE, consent, GitHub account, scope and audience checks continue normally. Another server's origin is still rejected.
+
+Separately, the consent page now uses `Referrer-Policy: same-origin`. The old `no-referrer` policy makes browser non-CORS form POSTs serialize Origin as `null` under the [Fetch Standard](https://fetch.spec.whatwg.org/#append-a-request-origin-header), conflicting with strict POST Origin verification. The strict verifier still rejects null/missing/foreign origins, and cross-origin Referer remains suppressed. This is a concrete adjacent browser-flow defect, not proof of the historical first `Invalid origin` request, whose method/headers were not captured.
+
+### Verification and remaining approval
+
+- Red/green evidence: the new observed-origin end-to-end test failed on the original code (`GET /authorize` returned 400 instead of 200), then passed with the compatibility boundary.
+- Both source and test TypeScript checks pass. Staging suite: 4 files / 30 tests pass; original-entry suite: 2 files / 13 tests pass (overlapping suites, not 43 unique tests).
+- Tests exercise actual local KV/provider, with GitHub HTTP mocked: origin and canonical resources, narrow stored grant, code exchange, refresh, Tools/Events, malformed resources, PKCE, consent binding, strict Origin, callback state, denial, token replay/expiry, scope/account restrictions and sanitized stage/code diagnostics.
+- No binding changes, migrations, remote writes, secret uploads or deployments were needed. Production code entry, Worker, D1 and webhook are unchanged. Existing live staging version remains `f9346d68-9195-491a-a20d-c60bf7987fa1` (last deployment record; this task did not redeploy).
+- After Nora separately approves staging deployment: deploy only `--env staging`, recreate/retry the ChatGPT OAuth connection, confirm consent GET 200 and browser POST with valid Origin, complete GitHub login as Nora, verify token exchange plus `tools/list` and `events/list`, refresh and negative credentials. Check only sanitized stage/code diagnostics if rejection persists. Do not capture full authorization URLs or credentials.
+- Real ChatGPT/GitHub login remains unverified until that approved online run. Actual MCP Events delivery also still requires the real callback origin; OAuth success alone does not verify signed delivery. If the worker later hosts multiple resources, remove/review the single-resource alias rather than extending it generically.
 
 References: [OpenAI authentication](https://developers.openai.com/plugins/build/auth), [Cloudflare OAuth Provider](https://github.com/cloudflare/workers-oauth-provider), [consent helpers](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/consent-page.md), [upstream sign-in helpers](https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/upstream-sign-in.md), [GitHub OAuth](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).
 

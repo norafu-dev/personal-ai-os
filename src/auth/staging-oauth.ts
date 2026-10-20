@@ -40,6 +40,31 @@ export function stagingOAuthConfig(env: StagingOAuthEnv) {
 	return { issuer: issuer.origin, resource: `${issuer.origin}/mcp`, redirects: parsed as string[] };
 }
 
+// Compatibility for the observed ChatGPT origin-only resource indicator. This is
+// one exact alias for our single MCP resource, NOT an origin-wide token audience.
+// Apply it at both authorization and token exchange; all grants remain /mcp-bound.
+export async function canonicalizeStagingOAuthResource(request: Request, issuer: string): Promise<Request> {
+	const url = new URL(request.url);
+	if (url.origin !== issuer) return request;
+	const replaceAlias = (params: URLSearchParams) => {
+		if (params.getAll('resource').length !== 1 || params.get('resource') !== issuer) return false;
+		params.set('resource', `${issuer}/mcp`);
+		return true;
+	};
+	if (url.pathname === '/authorize' && request.method === 'GET') {
+		if (replaceAlias(url.searchParams)) return new Request(url, request);
+	} else if (url.pathname === '/oauth/token' && request.method === 'POST' &&
+		request.headers.get('content-type')?.split(';')[0].trim() === 'application/x-www-form-urlencoded') {
+		const params = new URLSearchParams(new TextDecoder().decode(await request.clone().arrayBuffer()));
+		if (replaceAlias(params)) {
+			const headers = new Headers(request.headers);
+			headers.delete('content-length');
+			return new Request(request, { headers, body: params });
+		}
+	}
+	return request;
+}
+
 function consentPage(details: ConsentDescription, handle: string): string {
 	return `<!doctype html><html lang="zh"><meta charset="utf-8"><title>Personal AI OS Staging 授权</title>
 <h1>允许 ${escapeHtml(details.clientName)} 连接 Staging？</h1>
@@ -117,6 +142,7 @@ export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeo
 			async fetch(request, providerEnv, ctx) {
 				const url = new URL(request.url);
 				const oauth = providerEnv.OAUTH_PROVIDER!;
+				let stage = 'authorize.parse';
 				try {
 					if (url.pathname === '/authorize' && request.method === 'GET') {
 						const parsed = await oauth.parseAuthRequest(request);
@@ -124,13 +150,18 @@ export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeo
 							!MCP_SCOPES.every((scope) => parsed.scope.includes(scope)) || parsed.scope.some((scope) => ![...MCP_SCOPES, 'offline_access'].includes(scope))) {
 							return new Response('Invalid redirect, PKCE or scopes', { status: 400 });
 						}
+						stage = 'authorize.describe_consent';
 						const details = await oauth.describeConsent(parsed);
+						stage = 'authorize.begin_consent';
 						const consent = await oauth.beginConsent(parsed);
 						consent.headers.set('Content-Type', 'text/html; charset=utf-8');
-						consent.headers.set('Referrer-Policy', 'no-referrer');
+						// no-referrer makes a browser's form POST Origin null. Keep the
+						// same-origin consent POST verifiable without leaking to GitHub.
+						consent.headers.set('Referrer-Policy', 'same-origin');
 						return new Response(consentPage(details, consent.handle), { headers: consent.headers });
 					}
 					if (url.pathname === '/authorize' && request.method === 'POST') {
+						stage = 'authorize.submit_consent';
 						if (request.headers.get('origin') !== config.issuer) return new Response('Invalid origin', { status: 403 });
 						const form = await request.formData();
 						const handle = String(form.get('handle') ?? '');
@@ -149,6 +180,7 @@ export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeo
 						return new Response(null, { status: 302, headers: upstream.headers });
 					}
 					if (url.pathname === '/oauth/github/callback' && request.method === 'GET') {
+						stage = 'authorize.github_callback';
 						const upstream = await oauth.finishUpstream<{ verifier: string }>(request);
 						const code = url.searchParams.get('code');
 						if (url.searchParams.has('error') || !code) {
@@ -165,7 +197,13 @@ export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeo
 						return new Response(null, { status: 302, headers: upstream.headers });
 					}
 				} catch (error) {
-					if (error instanceof AuthorizationError) return new Response('Invalid or expired authorization request', { status: 400 });
+					if (error instanceof AuthorizationError) {
+						// Never log the error object/description: it can contain client input.
+						const code = ['invalid_request', 'invalid_target', 'invalid_scope', 'unauthorized_client', 'unsupported_response_type', 'access_denied'].includes(error.code)
+							? error.code : 'authorization_error';
+						console.warn('staging_oauth_rejected', { stage, code });
+						return new Response('Invalid or expired authorization request', { status: 400, headers: { 'Cache-Control': 'no-store' } });
+					}
 					throw error;
 				}
 				// Never fall back to static Bearer authentication for /mcp or OAuth paths.
