@@ -82,7 +82,7 @@ async function pkceChallenge(verifier: string): Promise<string> {
 
 type GitHubStage = 'token_exchange' | 'user_identity';
 const githubOAuthErrors = ['incorrect_client_credentials', 'redirect_uri_mismatch', 'bad_verification_code', 'unverified_user_email'] as const;
-type GitHubFailureCode = typeof githubOAuthErrors[number] | 'oauth_error' | 'timeout' | 'network_error' | 'invalid_json' | 'http_error' | 'invalid_payload';
+type GitHubFailureCode = typeof githubOAuthErrors[number] | 'oauth_error' | 'timeout' | 'network_error' | 'invalid_json' | 'http_error' | 'invalid_payload' | 'redirect_rejected';
 class GitHubIdentityError extends Error {
 	constructor(readonly stage: GitHubStage, readonly code: GitHubFailureCode, readonly httpStatus?: number) {
 		super('GitHub authentication failed');
@@ -95,6 +95,9 @@ async function githubJson(stage: GitHubStage, url: string, init: RequestInit) {
 	catch (error) {
 		throw new GitHubIdentityError(stage, error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'network_error');
 	}
+	// Workers rejects redirect:error before sending. Manual + explicit rejection
+	// preserves fail-closed behavior without forwarding credentials to a redirect.
+	if (response.status >= 300 && response.status < 400) throw new GitHubIdentityError(stage, 'redirect_rejected', response.status);
 	let payload: unknown;
 	try { payload = await response.json(); }
 	catch { throw new GitHubIdentityError(stage, response.ok ? 'invalid_json' : 'http_error', response.status); }
@@ -110,7 +113,7 @@ async function githubJson(stage: GitHubStage, url: string, init: RequestInit) {
 // GitHub is used only to establish identity. No repository scopes or GitHub token storage.
 async function githubIdentity(env: StagingOAuthEnv, code: string, verifier: string): Promise<string> {
 	const tokenResponse = await githubJson('token_exchange', 'https://github.com/login/oauth/access_token', {
-		method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000),
+		method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10_000),
 		headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
 		body: new URLSearchParams({
 			client_id: env.OAUTH_GITHUB_CLIENT_ID, client_secret: env.OAUTH_GITHUB_CLIENT_SECRET,
@@ -120,7 +123,7 @@ async function githubIdentity(env: StagingOAuthEnv, code: string, verifier: stri
 	const token = tokenResponse.payload;
 	if (typeof token.access_token !== 'string' || !token.access_token || token.token_type !== 'bearer') throw new GitHubIdentityError('token_exchange', 'invalid_payload', tokenResponse.status);
 	const response = await githubJson('user_identity', 'https://api.github.com/user', {
-		redirect: 'error', signal: AbortSignal.timeout(10_000),
+		redirect: 'manual', signal: AbortSignal.timeout(10_000),
 		headers: { authorization: `Bearer ${token.access_token}`, accept: 'application/vnd.github+json', 'User-Agent': 'personal-ai-os-staging' },
 	});
 	const user = response.payload;

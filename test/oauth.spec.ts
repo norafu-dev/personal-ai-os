@@ -106,7 +106,25 @@ function rpc(token: string, method = 'server/discover', params: object = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('staging OAuth with the real provider and local KV', () => {
+	it('constructs runtime-supported GitHub requests without following redirects', async () => {
+		const { approved, githubUrl } = await beginLogin();
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			// Use workerd's real Request constructor: a plain mocked response hides
+			// its rejection of redirect:error, which caused the deployed 502.
+			const request = new Request(input, init);
+			expect(request.redirect).toBe('manual');
+			return request.url === 'https://github.com/login/oauth/access_token'
+				? Response.json({ access_token: 'github-test-token', token_type: 'bearer' })
+				: Response.json({ id: 12345 });
+		});
+		const response = await call(`/oauth/github/callback?code=github-code&state=${githubUrl.searchParams.get('state')}`,
+			{ headers: { cookie: cookie(approved) } });
+		expect(response.status).toBe(302);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
 	const githubFailures = [
+		{ stage: 'token_exchange', code: 'redirect_rejected', status: 307, reply: () => new Response(null, { status: 307, headers: { location: 'https://private-redirect.example' } }) },
+		{ stage: 'user_identity', code: 'redirect_rejected', status: 302, reply: () => new Response(null, { status: 302, headers: { location: 'https://private-redirect.example' } }) },
 		...['incorrect_client_credentials', 'redirect_uri_mismatch', 'bad_verification_code', 'unverified_user_email'].map(code => ({
 			stage: 'token_exchange', code, status: 200,
 			reply: () => Response.json({ error: code, error_description: 'private-upstream-description' }),
