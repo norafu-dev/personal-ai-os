@@ -128,3 +128,12 @@ References: [OpenAI authentication](https://developers.openai.com/plugins/build/
 - A public-client DCR smoke test returned 201; an unapproved redirect returned 400. S256 authorization returned the protected consent page (200, X-Frame-Options DENY). No user grant or token was created by these smoke tests.
 - ChatGPT's actual Add custom MCP server dialog successfully rediscovered the metadata and selected DCR. With discovery complete, the displayed OAuth redirect became `https://chatgpt.com/connector_platform_oauth_redirect`. The temporary callback-ID URI observed before discovery was removed from the allowlist.
 - The ChatGPT dialog is left prepared with DCR selected. No plugin was created and no account consent was submitted. Nora must finish the real login; event subscription/delivery is still pending the actual event callback origin.
+
+## Resource-indicator fix deployed (2026-10-20)
+
+- Nora explicitly approved redeploying `personal-ai-os-staging`. Deployed source commit: `43bc0f1`; command: `pnpm exec wrangler deploy --env staging`.
+- Current version: `7ea3fd32-5003-4c43-9cb4-960a2485738a`. The earlier local-only section records the implementation phase; this entry supersedes its deployment-pending status.
+- The deployment retained independent staging KV `e4f50472d5be477a99e22260d71973ed` and D1 `personal-ai-os-staging-db`. No migrations, secret uploads or production changes were performed.
+- Remote smoke checks passed: health and both metadata documents 200; issuer/resource remain canonical; missing/invalid MCP token 401; origin-only resource authorization 200 with `Referrer-Policy: same-origin` and framing denied; foreign Origin 403; foreign resource and missing PKCE 400.
+- The consent check used an existing ChatGPT registration and fresh synthetic parameters, then explicitly denied that synthetic consent. No new DCR client, GitHub login, grant or token was created.
+- Next: Nora retries/recreates the ChatGPT connection and completes the actual consent/GitHub login. Real token exchange, authenticated Tools/Events and refresh still need that end-to-end check; actual event delivery remains pending the real receiver origin.
