@@ -23,11 +23,17 @@
 	},
 	"env": {
 		"staging": {
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1,
+				"logs": { "invocation_logs": false }
+			},
 			"main": "src/staging.ts",
 			"workers_dev": true,
 			"routes": [],
 			"vars": {
 				"ENVIRONMENT": "staging",
+				"MCP_EVENTS_DIAGNOSTICS": "1",
 				"OAUTH_ISSUER": "https://personal-ai-os-staging.noradev.workers.dev",
 				"OAUTH_REDIRECT_URIS": "[\"https://chatgpt.com/connector_platform_oauth_redirect\"]"
 			},

@@ -1,3 +1,4 @@
+import type { McpDiagnostics } from './diagnostics';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createMcpServer } from './server';
 import { listMcpEvents, McpEventError, subscribeMcpEvent, unsubscribeMcpEvent, type McpEventsEnv } from './events';
@@ -39,29 +40,38 @@ export async function handleAuthenticatedMcpHttp(
 	request: Request,
 	env: McpEventsEnv,
 	principal: { owner: string; token: string; scopes: string[] },
+	observer?: McpDiagnostics,
 ): Promise<Response> {
 	if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+	const result = (id: string | number, value: unknown) => { observer?.rpc(); return rpcResult(id, value); };
+	const failure = (id: string | number | null, code: number, message: string, data?: unknown) => { observer?.rpc(code); return rpcError(id, code, message, data); };
+	observer?.enter('rpc_parse');
 	let body: unknown;
 	try {
 		body = await request.json();
 	} catch {
-		return rpcError(null, -32700, 'Parse error');
+		observer?.failed('invalid_json');
+		return failure(null, -32700, 'Parse error');
 	}
-	if (typeof body !== 'object' || body === null || Array.isArray(body)) return rpcError(null, -32600, 'Invalid Request');
+	if (typeof body !== 'object' || body === null || Array.isArray(body)) { observer?.failed('invalid_request'); return failure(null, -32600, 'Invalid Request'); }
 	const message = body as Record<string, unknown>;
 	const id = typeof message.id === 'string' || typeof message.id === 'number' ? message.id : null;
-	if (message.jsonrpc !== '2.0' || id === null || typeof message.method !== 'string') return rpcError(id, -32600, 'Invalid Request');
+	if (message.jsonrpc !== '2.0' || id === null || typeof message.method !== 'string') { observer?.failed('invalid_request'); return failure(id, -32600, 'Invalid Request'); }
+	observer?.method(message.method);
+	observer?.passed();
+	observer?.enter('authenticated_dispatch');
+	observer?.passed();
 	const owner = principal.owner;
 	try {
 		switch (message.method) {
 			case 'server/discover':
-				return rpcResult(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} } });
+				return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} } });
 			case 'events/list':
-				return rpcResult(id, listMcpEvents());
+				return result(id, listMcpEvents());
 			case 'events/subscribe':
-				return rpcResult(id, await subscribeMcpEvent(env, owner, message.params));
+				return result(id, await subscribeMcpEvent(env, owner, message.params, fetch, observer));
 			case 'events/unsubscribe':
-				return rpcResult(id, await unsubscribeMcpEvent(env, owner, message.params));
+				return result(id, await unsubscribeMcpEvent(env, owner, message.params, observer));
 			default:
 				return mcpHandler.fetch(request, {
 					parsedBody: body,
@@ -69,8 +79,8 @@ export async function handleAuthenticatedMcpHttp(
 				});
 		}
 	} catch (error) {
-		if (error instanceof McpEventError) return rpcError(id, error.code, error.message, error.data);
-		console.error('MCP request failed:', error);
-		return rpcError(id, -32603, 'Internal error');
+		if (error instanceof McpEventError) return failure(id, error.code, error.message, error.data);
+		if (!observer) console.error('MCP request failed:', error);
+		return failure(id, -32603, 'Internal error');
 	}
 }

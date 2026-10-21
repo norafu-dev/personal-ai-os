@@ -1,6 +1,6 @@
 # P0：Staging MCP Events 最小诊断变更评审
 
-日期：2026-10-21。状态：方案已完成，运行时代码及配置尚未实施，未部署。
+日期：2026-10-21。状态：已按 Nora 本轮“查看评审并执行代码”完成本地诊断实现与测试，未提交、未推送、未部署。下文原方案作为设计依据保留；实际交付与限制见末尾。
 
 对应 [P0 原任务](https://app.notion.com/p/3fe5fa8281598111a9f9d3e04d88d949)。继续使用 ChatGPT Work + MCP Events，保留现有 OAuth、D1 和 Webhook；不引入 API 执行器或第三方投递服务。
 
@@ -110,3 +110,31 @@ Cloudflare invocation 日志可能包含请求 URL，故单改自定义 logger �
 - [MCP Events starter](https://github.com/rohanprichard/mcp-events-starter)
 - [Appwrite Events](https://github.com/appwrite/mcp/blob/main/docs/events.md)
 - [Cloudflare Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
+
+
+## 本地诊断实施交付（2026-10-21）
+
+### 实际范围
+
+- 只在 `src/staging.ts` 的 `/mcp` 请求、且 `ENVIRONMENT=staging` 和 `MCP_EVENTS_DIAGNOSTICS=1` 时创建 observer，经每请求独立的 Provider 闭包传递。共享模块不默认启用；原入口不注入。
+- 固定字段 `schema/time/correlation_id/method/stage/outcome/reason/rpc_code/http_status`；UTC 时间与 UUID 均由内部产生。运行时也检查枚举和数值，未知方法只记 `other`。每请求最多16条、每条最多1KiB，为唯一最终记录预留额度；sink 抛错不影响 RPC。
+- 最终记录 outcome 为 `success/rejected/internal_error/completed`。成功的已知 RPC 使用 `rpc_end`；失败保留实际失败阶段和真实 RPC code；`completed/http_returned` 只表示 SDK 转交路径的 HTTP 已返回，未解析其 RPC 成败。中间记录只使用 `received/passed/failed`，回调 HTTP 状态与最终入站 HTTP 状态分别记录。
+- 细分参数、Origin、订阅身份计算（`subscription_identity`）、D1读取、签名、连接、回调HTTP、JSON、echo、缓存命中及D1写入。签名错误内部记 `challenge_signing/internal_error`，公共 `-32015` 和原 `data.reason` 不变。失败操作后不会记录该操作通过。
+- 仅 `env.staging` 增加日志设置：100%采样，关闭 invocation logs；增加诊断开关。已实际运行 Staging 类型生成，生成差异只有新变量及其类型索引/配置hash。原入口配置、OAuth范围、callback白名单、D1 schema、签名、TTL、缓存与轮换行为、重试均未调整。
+
+### 验证
+
+- 源码和测试 TypeScript 均通过。
+- Staging：5文件/99项通过；原入口：2文件/24项通过。两套有重叠，不合计独立测试数。
+- 新增34项诊断测试；另新增1项真实本地Provider/KV/PKCE后订阅集成测试、1项配置隔离测试。覆盖故障分类、秘密哨兵、全部常见console通道、异常message、callback响应/Location、OAuth token、未知枚举、行数/字节上限、logger故障、并发correlation、缓存命中、unsubscribe与双入口开关隔离。
+- 本地OAuth后订阅测试实际观察到同一correlation的authentication、challenge、subscription_persist与唯一最终记录；签名HTTP使用本地受控transport，不是真实Work callback。
+- `wrangler deploy --dry-run --env staging` 仅完成本地打包并退出，没有上传或发布。
+- 测试在不含真实 `.dev.vars` 的临时源码副本中执行，仅使用本地D1/KV和已安装依赖；没有运行远程迁移、真实订阅或业务触发。
+
+### 安全待办与部署门槛
+
+评审列出的以下原有问题未在本次“诊断且行为不变”补丁中修改：投递时账号/grant撤销复核；Workers连接时公网地址验证；verified_at滑动缓存；旧密钥宽限期刷新；D1自由格式last_error；事件发生时间与接收时间分离；跨事件防循环。不能声称这些问题已修复，也不导出last_error。
+
+应用字段白名单不等于整个Cloudflare日志平台已脱敏。仍须在独立批准的Staging验证中，用合成哨兵核对实际存储记录、tail envelope、平台自动附加元数据和未捕获异常，不能使用真实授权URL。当前没有本轮日志读取成功证据，历史403未解决；部署列表/D1只读查询成功不代表日志可读。
+
+下一步：审阅本次实际diff，确认现有权限下的安全日志读取渠道，然后另行批准Staging部署与合成日志验收。部署前重新核对线上版本；不修改callback Origin或权限，不做生产操作，不引入额外API执行器。P0仍受阻，等待本地实现阶段审核；本轮指令不是部署许可。

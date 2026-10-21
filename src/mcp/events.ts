@@ -1,3 +1,4 @@
+import { diagnosticOperation, type McpDiagnostics, type DiagnosticReason } from './diagnostics';
 import { NOTION_CONFIG } from '../config/notion';
 import type { StandardNotionEvent } from '../types/notion-event';
 
@@ -53,19 +54,20 @@ function record(value: unknown): value is JsonRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function invalid(message: string): never {
+function invalid(message: string, observer?: McpDiagnostics, reason: DiagnosticReason = 'invalid_arguments'): never {
+	observer?.failed(reason);
 	throw new McpEventError(-32602, message);
 }
 
-function parseArguments(value: unknown): { data_source_id: string; page_id?: string } {
+function parseArguments(value: unknown, observer?: McpDiagnostics): { data_source_id: string; page_id?: string } {
 	if (!record(value) || Object.keys(value).some((key) => !['data_source_id', 'page_id'].includes(key))) {
-		return invalid('Invalid event arguments');
+		return invalid('Invalid event arguments', observer);
 	}
 	if (typeof value.data_source_id !== 'string' || !NOTION_CONFIG.managedDataSourceIds.has(value.data_source_id)) {
-		return invalid('Data source is not available for this event');
+		return invalid('Data source is not available for this event', observer);
 	}
 	if (value.page_id !== undefined && (typeof value.page_id !== 'string' || value.page_id.length === 0)) {
-		return invalid('page_id must be a nonempty string');
+		return invalid('page_id must be a nonempty string', observer);
 	}
 	return {
 		data_source_id: value.data_source_id,
@@ -73,17 +75,18 @@ function parseArguments(value: unknown): { data_source_id: string; page_id?: str
 	};
 }
 
-function parseEventParams(value: unknown, requireSecret: boolean) {
+function parseEventParams(value: unknown, requireSecret: boolean, observer?: McpDiagnostics) {
+	observer?.enter('arguments_validation');
 	if (!record(value) || value.name !== MCP_EVENT_NAME || !record(value.delivery)) {
-		return invalid('Unsupported event or delivery');
+		return invalid('Unsupported event or delivery', observer, record(value) && value.name === MCP_EVENT_NAME ? 'invalid_delivery' : 'invalid_event');
 	}
-	const args = parseArguments(value.arguments);
+	const args = parseArguments(value.arguments, observer);
 	const delivery = value.delivery;
 	if (delivery.mode !== 'webhook' || typeof delivery.url !== 'string') {
-		return invalid('A webhook URL is required');
+		return invalid('A webhook URL is required', observer, 'invalid_delivery');
 	}
 	if (requireSecret && (typeof delivery.secret !== 'string' || !validSigningSecret(delivery.secret))) {
-		return invalid('A whsec_ signing secret containing 24–64 bytes is required');
+		return invalid('A whsec_ signing secret containing 24–64 bytes is required', observer, 'invalid_secret');
 	}
 	return {
 		args,
@@ -106,14 +109,19 @@ function validSigningSecret(secret: string): boolean {
 	}
 }
 
-function validateCallbackUrl(urlString: string, allowedOrigin: string): void {
+function validateCallbackUrl(urlString: string, allowedOrigin: string, observer?: McpDiagnostics): void {
+	observer?.enter('callback_origin_validation');
 	let url: URL;
 	let allowed: URL;
 	try {
 		url = new URL(urlString);
+	} catch {
+		return invalid('Invalid callback URL or configured origin', observer, 'invalid_url');
+	}
+	try {
 		allowed = new URL(allowedOrigin);
 	} catch {
-		return invalid('Invalid callback URL or configured origin');
+		return invalid('Invalid callback URL or configured origin', observer, 'invalid_configured_origin');
 	}
 	if (
 		url.protocol !== 'https:' ||
@@ -129,8 +137,12 @@ function validateCallbackUrl(urlString: string, allowedOrigin: string): void {
 		url.hostname.startsWith('[') ||
 		/^\d+(?:\.\d+){3}$/.test(url.hostname)
 	) {
-		return invalid('Callback URL must use the configured public HTTPS origin');
+		return invalid('Callback URL must use the configured public HTTPS origin', observer,
+			url.protocol !== 'https:' || allowed.protocol !== 'https:' ? 'https_required'
+			: allowed.origin !== allowedOrigin ? 'invalid_configured_origin'
+			: url.origin !== allowed.origin ? 'origin_mismatch' : 'unsafe_url');
 	}
+	observer?.passed();
 }
 
 function constantTimeEqual(left: string, right: string): boolean {
@@ -163,13 +175,20 @@ async function signedPost(
 	id: string,
 	body: string,
 	webhookFetch: Fetcher,
+	observer?: McpDiagnostics,
 ): Promise<Response> {
 	validateCallbackUrl(url, allowedOrigin);
+	observer?.enter('challenge_signing');
 	const timestamp = String(Math.floor(Date.now() / 1000));
-	const signatures = [await signStandardWebhook(subscription.signing_secret, id, timestamp, body)];
-	if (subscription.previous_signing_secret && subscription.previous_secret_until && subscription.previous_secret_until > new Date().toISOString()) {
-		signatures.push(await signStandardWebhook(subscription.previous_signing_secret, id, timestamp, body));
-	}
+	const signatures: string[] = [];
+	try {
+		signatures.push(await signStandardWebhook(subscription.signing_secret, id, timestamp, body));
+		if (subscription.previous_signing_secret && subscription.previous_secret_until && subscription.previous_secret_until > new Date().toISOString()) {
+			signatures.push(await signStandardWebhook(subscription.previous_signing_secret, id, timestamp, body));
+		}
+	} catch (error) { observer?.failed('internal_error'); throw error; }
+	observer?.passed();
+	observer?.enter('challenge_transport');
 	return webhookFetch(url, {
 		method: 'POST',
 		// Workers does not support redirect:error. Return 3xx unchanged so
@@ -188,27 +207,38 @@ async function signedPost(
 	});
 }
 
-async function verifyCallback(subscription: Pick<Subscription, 'id' | 'signing_secret' | 'previous_signing_secret' | 'previous_secret_until'>, url: string, origin: string, webhookFetch: Fetcher): Promise<void> {
+async function verifyCallback(subscription: Pick<Subscription, 'id' | 'signing_secret' | 'previous_signing_secret' | 'previous_secret_until'>, url: string, origin: string, webhookFetch: Fetcher, observer?: McpDiagnostics): Promise<void> {
 	const challenge = crypto.randomUUID();
 	let response: Response;
 	try {
-		response = await signedPost(url, origin, subscription, `msg_verification_${crypto.randomUUID()}`, JSON.stringify({ type: 'verification', challenge }), webhookFetch);
+		response = await signedPost(url, origin, subscription, `msg_verification_${crypto.randomUUID()}`, JSON.stringify({ type: 'verification', challenge }), webhookFetch, observer);
 	} catch (error) {
 		if (error instanceof McpEventError) throw error;
+		observer?.failed(error instanceof DOMException && error.name === 'TimeoutError' ? 'timeout' : 'connection_failed');
 		throw new McpEventError(-32015, 'Callback verification failed', { reason: error instanceof DOMException && error.name === 'TimeoutError' ? 'timeout' : 'connection_failed' });
 	}
+	observer?.passed();
+	observer?.enter('challenge_http');
 	if (!response.ok) {
+		observer?.failed('non_2xx', response.status);
 		throw new McpEventError(-32015, 'Callback verification failed', { reason: 'challenge_failed' });
 	}
+	observer?.passed('passed', response.status);
+	observer?.enter('challenge_json');
 	let echoed: unknown;
 	try {
 		echoed = await response.json();
+		observer?.passed();
 	} catch {
+		observer?.failed('invalid_json');
 		throw new McpEventError(-32015, 'Callback verification failed', { reason: 'challenge_failed' });
 	}
+	observer?.enter('challenge_echo');
 	if (!record(echoed) || typeof echoed.challenge !== 'string' || !constantTimeEqual(challenge, echoed.challenge)) {
+		observer?.failed('invalid_echo');
 		throw new McpEventError(-32015, 'Callback verification failed', { reason: 'challenge_failed' });
 	}
+	observer?.passed();
 }
 
 export function listMcpEvents() {
@@ -240,27 +270,35 @@ export function listMcpEvents() {
 	};
 }
 
-export async function subscribeMcpEvent(env: McpEventsEnv, owner: string, params: unknown, webhookFetch: Fetcher = fetch) {
-	const parsed = parseEventParams(params, true);
-	validateCallbackUrl(parsed.url, env.MCP_CALLBACK_ORIGIN);
+export async function subscribeMcpEvent(env: McpEventsEnv, owner: string, params: unknown, webhookFetch: Fetcher = fetch, observer?: McpDiagnostics) {
+	const parsed = parseEventParams(params, true, observer);
+	validateCallbackUrl(parsed.url, env.MCP_CALLBACK_ORIGIN, observer);
 	if (parsed.ttlMs !== undefined && parsed.ttlMs !== null && (!Number.isSafeInteger(parsed.ttlMs) || (parsed.ttlMs as number) <= 0)) {
-		return invalid('ttlMs must be a positive integer or null');
+		observer?.enter('arguments_validation');
+		return invalid('ttlMs must be a positive integer or null', observer, 'invalid_ttl');
 	}
 	if (parsed.cursor !== undefined && parsed.cursor !== null && typeof parsed.cursor !== 'string') {
-		return invalid('cursor must be a string or null');
+		observer?.enter('arguments_validation');
+		return invalid('cursor must be a string or null', observer, 'invalid_cursor');
 	}
+	observer?.enter('arguments_validation');
+	observer?.passed();
 	const argsJson = JSON.stringify(parsed.args);
-	const id = await subscriptionId(owner, parsed.url, argsJson);
-	const existing = await env.DB.prepare('SELECT * FROM mcp_event_subscriptions WHERE id = ?').bind(id).first<Subscription>();
+	const id = await diagnosticOperation(observer, 'subscription_identity', () => subscriptionId(owner, parsed.url, argsJson));
+	const existing = await diagnosticOperation(observer, 'subscription_lookup',
+		() => env.DB.prepare('SELECT * FROM mcp_event_subscriptions WHERE id = ?').bind(id).first<Subscription>(), 'storage_failure');
 	const now = new Date();
 	const expiresAt = new Date(now.getTime() + Math.min((parsed.ttlMs as number | null | undefined) ?? DEFAULT_TTL_MS, MAX_TTL_MS)).toISOString();
 	const freshVerification = existing?.active === 1 && existing.signing_secret === parsed.secret && new Date(existing.verified_at).getTime() > now.getTime() - 10 * 60 * 1000;
 	if (!freshVerification) {
-		await verifyCallback({ id, signing_secret: parsed.secret!, previous_signing_secret: null, previous_secret_until: null }, parsed.url, env.MCP_CALLBACK_ORIGIN, webhookFetch);
+		await verifyCallback({ id, signing_secret: parsed.secret!, previous_signing_secret: null, previous_secret_until: null }, parsed.url, env.MCP_CALLBACK_ORIGIN, webhookFetch, observer);
+	} else {
+		observer?.enter('challenge_cache');
+		observer?.passed('skipped_verified');
 	}
 	const previousSecret = existing?.signing_secret !== parsed.secret ? existing?.signing_secret ?? null : existing?.previous_signing_secret ?? null;
 	const previousUntil = previousSecret ? new Date(now.getTime() + 5 * 60 * 1000).toISOString() : null;
-	await env.DB.prepare(
+	await diagnosticOperation(observer, 'subscription_persist', () => env.DB.prepare(
 		`INSERT INTO mcp_event_subscriptions
 		 (id, owner_id, event_name, arguments_json, callback_url, signing_secret, previous_signing_secret, previous_secret_until, expires_at, active, verified_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
@@ -272,18 +310,20 @@ export async function subscribeMcpEvent(env: McpEventsEnv, owner: string, params
 		 active = 1,
 		 verified_at = excluded.verified_at,
 		 updated_at = CURRENT_TIMESTAMP`,
-	).bind(id, owner, MCP_EVENT_NAME, argsJson, parsed.url, parsed.secret, previousSecret, previousUntil, expiresAt, now.toISOString()).run();
+	).bind(id, owner, MCP_EVENT_NAME, argsJson, parsed.url, parsed.secret, previousSecret, previousUntil, expiresAt, now.toISOString()).run(), 'storage_failure');
 	return { id, refreshBefore: expiresAt, cursor: null, truncated: false };
 }
 
-export async function unsubscribeMcpEvent(env: McpEventsEnv, owner: string, params: unknown): Promise<Record<string, never>> {
-	const parsed = parseEventParams(params, false);
-	validateCallbackUrl(parsed.url, env.MCP_CALLBACK_ORIGIN);
-	const id = await subscriptionId(owner, parsed.url, JSON.stringify(parsed.args));
-	await env.DB.prepare('UPDATE mcp_event_subscriptions SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?')
-		.bind(id, owner).run();
-	await env.DB.prepare("UPDATE mcp_event_deliveries SET status = 'abandoned' WHERE subscription_id = ? AND status IN ('pending', 'failed')")
-		.bind(id).run();
+export async function unsubscribeMcpEvent(env: McpEventsEnv, owner: string, params: unknown, observer?: McpDiagnostics): Promise<Record<string, never>> {
+	const parsed = parseEventParams(params, false, observer);
+	validateCallbackUrl(parsed.url, env.MCP_CALLBACK_ORIGIN, observer);
+	const id = await diagnosticOperation(observer, 'subscription_identity', () => subscriptionId(owner, parsed.url, JSON.stringify(parsed.args)));
+	await diagnosticOperation(observer, 'subscription_persist', async () => {
+		await env.DB.prepare('UPDATE mcp_event_subscriptions SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?')
+			.bind(id, owner).run();
+		await env.DB.prepare("UPDATE mcp_event_deliveries SET status = 'abandoned' WHERE subscription_id = ? AND status IN ('pending', 'failed')")
+			.bind(id).run();
+	}, 'storage_failure');
 	return {};
 }
 
