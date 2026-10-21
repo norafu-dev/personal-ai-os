@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { NOTION_CONFIG } from '../src/config/notion';
 import { createNotionClient } from '../src/notion/client';
-import { ToolError, listCalendar, listTasks, saveCalendarEvent, saveTask } from '../src/notion/tools';
+import { ToolError, listCalendar, listTasks, saveTask } from '../src/notion/tools';
 
-const TASKS = NOTION_CONFIG.tasksDataSourceId;
-const CALENDAR = NOTION_CONFIG.calendarDataSourceId;
+const SCHEDULE = NOTION_CONFIG.scheduleDataSourceId;
+const OTHER = '95af6fad-798f-4d0a-b370-356646a5745d';
 
 type FakePage = { object: 'page'; id: string; url: string; parent: Record<string, string>; properties: Record<string, any>; last_edited_time: string };
 
@@ -52,93 +52,88 @@ function fakeNotion() {
 }
 
 const title = (value: string) => ({ title: [{ plain_text: value, text: { content: value } }] });
-const event = (name: string, start: string, end: string | null = null, locked = false) => ({
-	Name: title(name), Date: { date: { start, end } }, 锁定: { checkbox: locked },
-});
-const task = (name: string, status: string, needsConfirmation = false) => ({
-	事项: title(name), 状态: { status: { name: status } }, 需要人工确认: { checkbox: needsConfirmation },
+const item = (name: string, start: string | null, end: string | null = null, { locked = false, status = 'Not started' } = {}) => ({
+	Name: title(name), Date: { date: start ? { start, end } : null }, Status: { status: { name: status } }, 锁定: { checkbox: locked },
 });
 
-describe('task tools', () => {
-	it('lists open tasks by default with a closed-status filter', async () => {
+describe('list tools', () => {
+	it('lists unfinished tasks by default, with or without a date', async () => {
 		const { notion, add, calls } = fakeNotion();
-		add(TASKS, task('Write tools', '处理中'));
+		add(SCHEDULE, item('Backlog', null));
 		const tasks = await listTasks(notion, {});
-		expect(tasks).toEqual([expect.objectContaining({ title: 'Write tools', status: '处理中', needs_confirmation: false })]);
-		expect(calls[0].path).toBe(`/v1/data_sources/${TASKS}/query`);
-		expect(calls[0].body.filter.and).toEqual([
-			{ property: '状态', status: { does_not_equal: '已完成' } },
-			{ property: '状态', status: { does_not_equal: '已归档' } },
-		]);
+		expect(tasks).toEqual([expect.objectContaining({ title: 'Backlog', status: 'Not started', start: null })]);
+		expect(calls[0].path).toBe(`/v1/data_sources/${SCHEDULE}/query`);
+		expect(calls[0].body.filter.and).toEqual([{ property: 'Status', status: { does_not_equal: 'Done' } }]);
+		await listTasks(notion, { include_done: true });
+		expect(calls[1].body.filter).toBeUndefined();
 	});
 
-	it('creates tasks as ChatGPT in the inbox', async () => {
+	it('lists only items overlapping the window', async () => {
+		const { notion, add } = fakeNotion();
+		add(SCHEDULE, item('Morning', '2026-10-22T09:00:00+09:00', '2026-10-22T10:00:00+09:00'));
+		add(SCHEDULE, item('All day', '2026-10-22'));
+		add(SCHEDULE, item('Trip', '2026-10-20', '2026-10-23'));
+		add(SCHEDULE, item('Next day', '2026-10-23T09:00:00+09:00', '2026-10-23T10:00:00+09:00'));
+		const items = await listCalendar(notion, { start: '2026-10-22', end: '2026-10-22' });
+		expect(items.map((value) => value.title).sort()).toEqual(['All day', 'Morning', 'Trip']);
+		expect(items.find((value) => value.title === 'All day')).toMatchObject({ all_day: true });
+		await expect(listCalendar(notion, { start: '2026-10-23', end: '2026-10-22' })).rejects.toThrow(/after start/);
+	});
+});
+
+describe('save_task', () => {
+	it('creates tasks as Not started in 日程', async () => {
 		const { notion, calls } = fakeNotion();
 		const created = await saveTask(notion, { title: 'Plan week', priority: '高' });
-		expect(created).toMatchObject({ title: 'Plan week' });
-		const props = calls.at(-1)!.body.properties;
-		expect(calls.at(-1)!.body.parent).toEqual({ type: 'data_source_id', data_source_id: TASKS });
-		expect(props.发起方).toEqual({ select: { name: 'ChatGPT' } });
-		expect(props.状态).toEqual({ status: { name: '收件箱' } });
-		expect(props.优先级).toEqual({ select: { name: '高' } });
+		expect(created).toMatchObject({ title: 'Plan week', start: null });
+		expect(calls.at(-1)!.body.parent).toEqual({ type: 'data_source_id', data_source_id: SCHEDULE });
+		expect(calls.at(-1)!.body.properties.Status).toEqual({ status: { name: 'Not started' } });
+		expect(calls.at(-1)!.body.properties.Priority).toEqual({ select: { name: '高' } });
 		await expect(saveTask(notion, {})).rejects.toBeInstanceOf(ToolError);
 	});
 
-	it('updates only given fields and refuses to complete tasks needing confirmation', async () => {
+	it('updates only given fields and refuses pages outside 日程', async () => {
 		const { notion, add, calls } = fakeNotion();
-		const id = add(TASKS, task('Decide', '处理中', true));
-		await expect(saveTask(notion, { page_id: id, status: '已完成' })).rejects.toThrow(/待评审/);
-		await saveTask(notion, { page_id: id, status: '待评审', due: null });
-		expect(calls.at(-1)).toMatchObject({ method: 'PATCH', body: { properties: { 状态: { status: { name: '待评审' } }, 截止时间: { date: null } } } });
-		expect(Object.keys(calls.at(-1)!.body.properties)).toEqual(['状态', '截止时间']);
+		const id = add(SCHEDULE, item('Write', null));
+		await saveTask(notion, { page_id: id, status: 'Done' });
+		expect(calls.at(-1)).toMatchObject({ method: 'PATCH', body: { properties: { Status: { status: { name: 'Done' } } } } });
+		expect(Object.keys(calls.at(-1)!.body.properties)).toEqual(['Status']);
+		const other = add(OTHER, item('Queue item', null));
+		await expect(saveTask(notion, { page_id: other, status: 'Done' })).rejects.toThrow(/not in the 日程/);
+		await expect(saveTask(notion, { page_id: 'missing', status: 'Done' })).rejects.toThrow(/not found/);
 	});
 
-	it('refuses pages outside the task database', async () => {
+	it('refuses overlaps with unfinished timed items only', async () => {
 		const { notion, add } = fakeNotion();
-		const id = add(CALENDAR, event('Not a task', '2026-10-22'));
-		await expect(saveTask(notion, { page_id: id, status: '已完成' })).rejects.toThrow(/expected Notion database/);
-		await expect(saveTask(notion, { page_id: 'missing', status: '已完成' })).rejects.toThrow(/not found/);
-	});
-});
-
-describe('calendar tools', () => {
-	it('lists only events overlapping the window', async () => {
-		const { notion, add } = fakeNotion();
-		add(CALENDAR, event('Morning', '2026-10-22T09:00:00+09:00', '2026-10-22T10:00:00+09:00'));
-		add(CALENDAR, event('All day', '2026-10-22'));
-		add(CALENDAR, event('Trip', '2026-10-20', '2026-10-23'));
-		add(CALENDAR, event('Next day', '2026-10-23T09:00:00+09:00', '2026-10-23T10:00:00+09:00'));
-		const events = await listCalendar(notion, { start: '2026-10-22', end: '2026-10-22' });
-		expect(events.map((value) => value.title).sort()).toEqual(['All day', 'Morning', 'Trip']);
-		expect(events.find((value) => value.title === 'All day')).toMatchObject({ all_day: true });
-	});
-
-	it('creates events and refuses overlaps with timed events', async () => {
-		const { notion, add, calls } = fakeNotion();
-		add(CALENDAR, event('Meeting', '2026-10-22T09:00:00+09:00', '2026-10-22T10:00:00+09:00'));
-		add(CALENDAR, event('All day', '2026-10-22'));
-		await expect(saveCalendarEvent(notion, { title: 'Focus', start: '2026-10-22T09:30:00+09:00', end: '2026-10-22T11:00:00+09:00' }))
+		add(SCHEDULE, item('Meeting', '2026-10-22T09:00:00+09:00', '2026-10-22T10:00:00+09:00'));
+		add(SCHEDULE, item('Finished', '2026-10-22T10:00:00+09:00', '2026-10-22T11:00:00+09:00', { status: 'Done' }));
+		add(SCHEDULE, item('All day', '2026-10-22'));
+		await expect(saveTask(notion, { title: 'Focus', start: '2026-10-22T09:30:00+09:00', end: '2026-10-22T11:00:00+09:00' }))
 			.rejects.toThrow(/conflict.*Meeting/);
-		const { event: created } = await saveCalendarEvent(notion, { title: 'Focus', start: '2026-10-22T10:00:00+09:00', end: '2026-10-22T11:00:00+09:00' });
-		expect(created).toMatchObject({ title: 'Focus', start: '2026-10-22T10:00:00+09:00', end: '2026-10-22T11:00:00+09:00' });
-		expect(calls.at(-1)!.body.parent).toEqual({ type: 'data_source_id', data_source_id: CALENDAR });
+		const created = await saveTask(notion, { title: 'Focus', start: '2026-10-22T10:00:00+09:00', end: '2026-10-22T11:00:00+09:00' });
+		expect(created).toMatchObject({ start: '2026-10-22T10:00:00+09:00', end: '2026-10-22T11:00:00+09:00' });
 	});
 
-	it('moves events keeping duration, but never locked ones', async () => {
+	it('moves items keeping duration; locked items only change status or priority', async () => {
 		const { notion, add, pages } = fakeNotion();
-		const id = add(CALENDAR, event('Gym', '2026-10-22T18:00:00+09:00', '2026-10-22T19:30:00+09:00'));
-		const locked = add(CALENDAR, event('Doctor', '2026-10-24T10:00:00+09:00', '2026-10-24T11:00:00+09:00', true));
-		await saveCalendarEvent(notion, { page_id: id, start: '2026-10-23T07:00:00+09:00' });
+		const id = add(SCHEDULE, item('Gym', '2026-10-22T18:00:00+09:00', '2026-10-22T19:30:00+09:00'));
+		const locked = add(SCHEDULE, item('Doctor', '2026-10-24T10:00:00+09:00', '2026-10-24T11:00:00+09:00', { locked: true }));
+		await saveTask(notion, { page_id: id, start: '2026-10-23T07:00:00+09:00' });
 		expect(pages.get(id)!.properties.Date).toEqual({ date: { start: '2026-10-23T07:00:00+09:00', end: '2026-10-23T08:30:00+09:00' } });
-		await expect(saveCalendarEvent(notion, { page_id: locked, start: '2026-10-25T10:00:00+09:00' })).rejects.toThrow(/locked/);
 		// Moving into its own old slot is not a conflict with itself.
-		await saveCalendarEvent(notion, { page_id: id, start: '2026-10-23T07:30:00+09:00' });
+		await saveTask(notion, { page_id: id, start: '2026-10-23T07:30:00+09:00' });
+		await expect(saveTask(notion, { page_id: locked, start: '2026-10-25T10:00:00+09:00' })).rejects.toThrow(/locked/);
+		await expect(saveTask(notion, { page_id: locked, title: 'Renamed' })).rejects.toThrow(/locked/);
+		await saveTask(notion, { page_id: locked, status: 'Done' });
+		expect(pages.get(locked)!.properties.Status).toEqual({ status: { name: 'Done' } });
 	});
 
-	it('validates ranges', async () => {
-		const { notion } = fakeNotion();
-		await expect(saveCalendarEvent(notion, { title: 'Bad', start: '2026-10-22T10:00:00+09:00', end: '2026-10-22T09:00:00+09:00' })).rejects.toThrow(/after start/);
-		await expect(saveCalendarEvent(notion, { title: 'Mixed', start: '2026-10-22', end: '2026-10-22T09:00:00+09:00' })).rejects.toThrow(/both/);
-		await expect(listCalendar(notion, { start: '2026-10-23', end: '2026-10-22' })).rejects.toThrow(/after start/);
+	it('clears dates and validates ranges', async () => {
+		const { notion, add, pages } = fakeNotion();
+		const id = add(SCHEDULE, item('Someday', '2026-10-22'));
+		await saveTask(notion, { page_id: id, start: null });
+		expect(pages.get(id)!.properties.Date).toEqual({ date: null });
+		await expect(saveTask(notion, { title: 'Bad', start: '2026-10-22T10:00:00+09:00', end: '2026-10-22T09:00:00+09:00' })).rejects.toThrow(/after start/);
+		await expect(saveTask(notion, { title: 'Mixed', start: '2026-10-22', end: '2026-10-22T09:00:00+09:00' })).rejects.toThrow(/both/);
 	});
 });
