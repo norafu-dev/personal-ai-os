@@ -16,7 +16,7 @@ export default defineConfig({
 		}),
 	],
 	test: {
-		include: ["test/index.spec.ts", "test/mcp-events.spec.ts"],
+		include: ["test/index.spec.ts", "test/mcp-events.spec.ts", "test/notion-tools.spec.ts"],
 		setupFiles: ["./test/apply-migrations.ts"],
 	},
 });

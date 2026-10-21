@@ -1,3 +1,4 @@
+import type { McpDiagnostics } from '../mcp/diagnostics';
 import OAuthProvider, {
 	AuthorizationError,
 	OAuthError,
@@ -13,6 +14,7 @@ import type { Bindings } from '../index';
 
 export type StagingOAuthEnv = Bindings & {
 	ENVIRONMENT: 'staging';
+	MCP_EVENTS_DIAGNOSTICS?: string;
 	OAUTH_KV: KVNamespace;
 	OAUTH_ISSUER: string;
 	OAUTH_REDIRECT_URIS: string;
@@ -131,7 +133,7 @@ async function githubIdentity(env: StagingOAuthEnv, code: string, verifier: stri
 	return String(user.id);
 }
 
-export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeof worker.fetch) {
+export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeof worker.fetch, observer?: McpDiagnostics) {
 	const config = stagingOAuthConfig(env);
 	return new OAuthProvider<StagingOAuthEnv>({
 		apiRoute: '/mcp',
@@ -165,7 +167,8 @@ export function createStagingOAuthProvider(env: StagingOAuthEnv, fallback: typeo
 				const auth = (ctx as OAuthResourceContext<Identity>).auth;
 				if (identity?.owner !== 'nora' || identity.githubId !== providerEnv.OAUTH_ALLOWED_GITHUB_ID) return new Response('Forbidden', { status: 403 });
 				if (!MCP_SCOPES.every((scope) => auth.scope.includes(scope))) return insufficientScope(auth, MCP_SCOPES);
-				return handleAuthenticatedMcpHttp(request, providerEnv, { owner: identity.owner, token: auth.token, scopes: auth.scope });
+				observer?.passed();
+				return handleAuthenticatedMcpHttp(request, providerEnv, { owner: identity.owner, token: auth.token, scopes: auth.scope }, observer);
 			},
 		},
 		defaultHandler: {

@@ -17,7 +17,7 @@ const secret = `whsec_${btoa('12345678901234567890123456789012')}`;
 const dataSourceId = [...NOTION_CONFIG.managedDataSourceIds][0];
 const queueDataSourceId = '95af6fad-798f-4d0a-b370-356646a5745d';
 const eventsEnv = { DB: env.DB, MCP_CALLBACK_ORIGIN: origin };
-const httpEnv = { ...eventsEnv, MCP_AUTH_TOKEN: 'test-mcp-token' };
+const httpEnv = { ...eventsEnv, MCP_AUTH_TOKEN: 'test-mcp-token', NOTION_API_KEY: 'test-notion-key' };
 
 function params(overrides: Record<string, unknown> = {}) {
 	return {
@@ -149,7 +149,7 @@ describe('MCP Events', () => {
 		expect(listed.result.events[0]?.name).toBe(MCP_EVENT_NAME);
 		const tools = await (await rpc('tools/list')).json() as { result?: { tools?: { name: string }[] }; error?: unknown };
 		expect(tools.error).toBeUndefined();
-		expect(tools.result?.tools?.some((tool) => tool.name === 'get_projects')).toBe(true);
+		expect(tools.result?.tools?.some((tool) => tool.name === 'list_tasks')).toBe(true);
 	});
 
 	it('verifies the callback, rejects bad challenges, and refreshes idempotently', async () => {

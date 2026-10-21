@@ -106,6 +106,73 @@ function rpc(token: string, method = 'server/discover', params: object = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('staging OAuth with the real provider and local KV', () => {
+	it('correlates authenticated OAuth subscribe, challenge, persistence and end without private values', async () => {
+		const { tokens } = await obtainTokens();
+		const marker = 'PRIVATE_OAUTH_DIAGNOSTIC_SENTINEL';
+		const secret = `whsec_${btoa('12345678901234567890123456789012')}`;
+		const channels = ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'table'] as const;
+		const outputs = channels.map(channel => vi.spyOn(console, channel).mockImplementation(() => {}));
+		const transport = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+			expect(new Request(_input, init).redirect).toBe('manual');
+			return Response.json({ challenge: JSON.parse(String(init?.body)).challenge });
+		});
+		const response = await call('/mcp', { method: 'POST', headers: {
+			authorization: `Bearer ${tokens.access_token}`, cookie: marker, 'content-type': 'application/json',
+		}, body: JSON.stringify({ jsonrpc: '2.0', id: marker, method: 'events/subscribe', params: {
+			name: 'notion.page_properties_updated', arguments: {data_source_id:'95af6fad-798f-4d0a-b370-356646a5745d'},
+			delivery: {mode:'webhook',url:`https://callback.example.com/${marker}?private=${marker}`,secret},
+		} }) }, {...testEnv, MCP_CALLBACK_ORIGIN:'https://callback.example.com', MCP_EVENTS_DIAGNOSTICS:'1'});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toHaveProperty('result.id');
+		expect(transport).toHaveBeenCalledTimes(1);
+		const logs = outputs[0].mock.calls.map(call => call[0]);
+		expect(logs).toContainEqual(expect.objectContaining({stage:'authentication',outcome:'passed'}));
+		expect(logs).toContainEqual(expect.objectContaining({stage:'subscription_persist',outcome:'passed'}));
+		expect(logs.at(-1)).toMatchObject({stage:'rpc_end',outcome:'success',http_status:200});
+		expect(logs).toHaveLength(15);
+		expect(new Set(logs.map(value => value.correlation_id)).size).toBe(1);
+		const all = JSON.stringify(outputs.flatMap(output => output.mock.calls));
+		for (const value of [marker, tokens.access_token, tokens.refresh_token, secret, 'callback.example.com']) expect(all).not.toContain(value);
+	});
+
+	it('discovers the registered tool and event definitions with a resource-bound OAuth token', async () => {
+		// Real local Provider/KV and PKCE/code exchange; only GitHub HTTP is mocked.
+		// Keep credentials in memory and assert payloads, not just HTTP 200.
+		const { tokens } = await obtainTokens();
+		const tools = await rpc(tokens.access_token, 'tools/list');
+		expect(tools.status).toBe(200);
+		expect(await tools.json()).toMatchObject({
+			jsonrpc: '2.0', id: 1,
+			result: { tools: expect.arrayContaining([expect.objectContaining({
+				name: 'list_tasks', inputSchema: expect.objectContaining({ type: 'object' }),
+			})]) },
+		});
+		const discovery = await rpc(tokens.access_token, 'server/discover');
+		expect(discovery.status).toBe(200);
+		expect(await discovery.json()).toMatchObject({ jsonrpc: '2.0', id: 1,
+			result: { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} } } });
+		const events = await rpc(tokens.access_token, 'events/list');
+		expect(events.status).toBe(200);
+		expect(await events.json()).toMatchObject({ jsonrpc: '2.0', id: 1,
+			result: { events: expect.arrayContaining([expect.objectContaining({ name: 'notion.page_properties_updated' })]) } });
+	});
+
+	it('lists tools for a legacy stateless MCP client using the same OAuth audience', async () => {
+		const { tokens } = await obtainTokens();
+		const response = await call('/mcp', { method: 'POST', headers: {
+			authorization: `Bearer ${tokens.access_token}`, 'content-type': 'application/json',
+			accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-03-26',
+		}, body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} }) });
+		expect(response.status).toBe(200);
+		const text = await response.text();
+		const payload = response.headers.get('content-type')?.startsWith('text/event-stream')
+			? JSON.parse(text.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+			: JSON.parse(text);
+		expect(payload).toMatchObject({ jsonrpc: '2.0', id: 7,
+			result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'list_tasks' })]) } });
+		expect(payload.error).toBeUndefined();
+	});
+
 	it('constructs runtime-supported GitHub requests without following redirects', async () => {
 		const { approved, githubUrl } = await beginLogin();
 		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

@@ -166,3 +166,6 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+# macOS
+.DS_Store
