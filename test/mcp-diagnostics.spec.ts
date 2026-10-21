@@ -12,7 +12,7 @@ const secret = `whsec_${btoa('12345678901234567890123456789012')}`;
 const args = { data_source_id: [...NOTION_CONFIG.managedDataSourceIds][0] };
 const params = { name: 'notion.page_properties_updated', arguments: args,
  delivery: { mode: 'webhook', url: `${origin}/${sentinel}?token=${sentinel}`, secret } };
-const config = { DB: env.DB, MCP_CALLBACK_ORIGIN: origin };
+const config = { DB: env.DB, MCP_CALLBACK_ORIGIN: origin, NOTION_API_KEY: 'test-notion-key' };
 const principal = { owner: 'nora', token: sentinel, scopes: ['mcp:tools', 'mcp:events'] };
 function trace() {
  const records: DiagnosticRecord[] = [];

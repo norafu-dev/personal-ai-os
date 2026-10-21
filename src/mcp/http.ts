@@ -1,11 +1,11 @@
 import type { McpDiagnostics } from './diagnostics';
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import { createNotionClient } from '../notion/client';
 import { createMcpServer } from './server';
 import { listMcpEvents, McpEventError, subscribeMcpEvent, unsubscribeMcpEvent, type McpEventsEnv } from './events';
 
-export type McpHttpEnv = McpEventsEnv & { MCP_AUTH_TOKEN: string };
-
-const mcpHandler = createMcpHandler(createMcpServer);
+export type McpToolsEnv = McpEventsEnv & { NOTION_API_KEY: string };
+export type McpHttpEnv = McpToolsEnv & { MCP_AUTH_TOKEN: string };
 
 function equalToken(left: string, right: string): boolean {
 	const a = new TextEncoder().encode(left);
@@ -38,7 +38,7 @@ export async function handleMcpHttp(request: Request, env: McpHttpEnv): Promise<
 // Only authentication adapters call this function; it is not a separate HTTP route.
 export async function handleAuthenticatedMcpHttp(
 	request: Request,
-	env: McpEventsEnv,
+	env: McpToolsEnv,
 	principal: { owner: string; token: string; scopes: string[] },
 	observer?: McpDiagnostics,
 ): Promise<Response> {
@@ -72,11 +72,14 @@ export async function handleAuthenticatedMcpHttp(
 				return result(id, await subscribeMcpEvent(env, owner, message.params, fetch, observer));
 			case 'events/unsubscribe':
 				return result(id, await unsubscribeMcpEvent(env, owner, message.params, observer));
-			default:
-				return mcpHandler.fetch(request, {
+			default: {
+				// Per request: the server factory needs this request's Notion credentials.
+				const notion = createNotionClient(env.NOTION_API_KEY);
+				return createMcpHandler(() => createMcpServer(notion)).fetch(request, {
 					parsedBody: body,
 					authInfo: { token: principal.token, clientId: 'personal-ai-os', scopes: principal.scopes },
 				});
+			}
 		}
 	} catch (error) {
 		if (error instanceof McpEventError) return failure(id, error.code, error.message, error.data);

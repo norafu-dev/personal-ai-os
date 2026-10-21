@@ -144,7 +144,7 @@ describe('staging OAuth with the real provider and local KV', () => {
 		expect(await tools.json()).toMatchObject({
 			jsonrpc: '2.0', id: 1,
 			result: { tools: expect.arrayContaining([expect.objectContaining({
-				name: 'get_projects', inputSchema: expect.objectContaining({ type: 'object' }),
+				name: 'list_tasks', inputSchema: expect.objectContaining({ type: 'object' }),
 			})]) },
 		});
 		const discovery = await rpc(tokens.access_token, 'server/discover');
@@ -169,7 +169,7 @@ describe('staging OAuth with the real provider and local KV', () => {
 			? JSON.parse(text.split('\n').find(line => line.startsWith('data: '))!.slice(6))
 			: JSON.parse(text);
 		expect(payload).toMatchObject({ jsonrpc: '2.0', id: 7,
-			result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'get_projects' })]) } });
+			result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'list_tasks' })]) } });
 		expect(payload.error).toBeUndefined();
 	});
 
