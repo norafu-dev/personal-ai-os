@@ -96,6 +96,7 @@ Never change the production Notion Connection Webhook target for this test. Chat
 - Synthetic event `staging-38fbd106-18eb-44ac-b588-428b1cbe899c` persisted remotely with status `completed`, attempts 1.
 - Five staging secrets uploaded; random MCP and webhook credentials are retained only in ignored `.dev.vars.staging`.
 - `NOTION_API_KEY` is an intentionally unusable staging value: the current event pipeline does not read Notion. Configure a separately authorized integration before adding Notion read tools.
+  - 2026-10-21: replaced with the same Notion integration key as production (Nora's choice) so the MCP tools (`list_tasks`, `list_calendar`, `save_task`) can read and write 日程. Staging and production now share one Notion identity; switch to a separate integration if edits need to be told apart.
 - `MCP_CALLBACK_ORIGIN` is still `https://callback.staging.example.com`, a placeholder. Replace it with the actual ChatGPT callback origin before subscription verification. No active subscriptions or successful remote callback deliveries have been claimed.
 - ChatGPT connection must support the configured Bearer authentication; compatibility with the actual ChatGPT plugin connection remains to be verified.
 - Production resources and the production Notion Webhook target were not changed.
