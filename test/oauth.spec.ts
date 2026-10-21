@@ -106,6 +106,44 @@ function rpc(token: string, method = 'server/discover', params: object = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('staging OAuth with the real provider and local KV', () => {
+	it('discovers the registered tool and event definitions with a resource-bound OAuth token', async () => {
+		// Real local Provider/KV and PKCE/code exchange; only GitHub HTTP is mocked.
+		// Keep credentials in memory and assert payloads, not just HTTP 200.
+		const { tokens } = await obtainTokens();
+		const tools = await rpc(tokens.access_token, 'tools/list');
+		expect(tools.status).toBe(200);
+		expect(await tools.json()).toMatchObject({
+			jsonrpc: '2.0', id: 1,
+			result: { tools: expect.arrayContaining([expect.objectContaining({
+				name: 'get_projects', inputSchema: expect.objectContaining({ type: 'object' }),
+			})]) },
+		});
+		const discovery = await rpc(tokens.access_token, 'server/discover');
+		expect(discovery.status).toBe(200);
+		expect(await discovery.json()).toMatchObject({ jsonrpc: '2.0', id: 1,
+			result: { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {} } } });
+		const events = await rpc(tokens.access_token, 'events/list');
+		expect(events.status).toBe(200);
+		expect(await events.json()).toMatchObject({ jsonrpc: '2.0', id: 1,
+			result: { events: expect.arrayContaining([expect.objectContaining({ name: 'notion.page_properties_updated' })]) } });
+	});
+
+	it('lists tools for a legacy stateless MCP client using the same OAuth audience', async () => {
+		const { tokens } = await obtainTokens();
+		const response = await call('/mcp', { method: 'POST', headers: {
+			authorization: `Bearer ${tokens.access_token}`, 'content-type': 'application/json',
+			accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-03-26',
+		}, body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} }) });
+		expect(response.status).toBe(200);
+		const text = await response.text();
+		const payload = response.headers.get('content-type')?.startsWith('text/event-stream')
+			? JSON.parse(text.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+			: JSON.parse(text);
+		expect(payload).toMatchObject({ jsonrpc: '2.0', id: 7,
+			result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'get_projects' })]) } });
+		expect(payload.error).toBeUndefined();
+	});
+
 	it('constructs runtime-supported GitHub requests without following redirects', async () => {
 		const { approved, githubUrl } = await beginLogin();
 		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
